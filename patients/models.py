@@ -96,7 +96,7 @@ class Treatment(models.Model):
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="treatments"
     )
     procedure = models.CharField(max_length=100)  # matched to inventory usage rules, e.g. "Composite Class 1"
-    tooth = models.CharField(max_length=20, blank=True)
+    tooth = models.CharField(max_length=100, blank=True)  # one tooth ("26") or a list ("12, 14, 16, 22")
     units = models.PositiveSmallIntegerField(default=1)  # how many fillings / teeth of this procedure
     cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     notes = models.TextField(blank=True)

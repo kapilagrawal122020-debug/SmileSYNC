@@ -18,8 +18,10 @@ python manage.py test             # 16 tests covering the flows in the brief
 Demo logins (after `seed_demo`): doctor `9000000001` / `doctor123`, assistant `9000000002` / `assist123`,
 patient `9111111111` (OTP, shown in the response while `DEBUG=1`).
 
-Onboard a real clinic: `python manage.py createsuperuser`, open `/admin/`, add a Clinic, then add its doctor user.
+Onboard a real clinic: a doctor signs up with `POST /api/auth/register/` (name, phone, password, clinic_name, optional city,
+designation, speciality, registration_number). That creates the clinic and the doctor and returns a token.
 The doctor then creates assistants and consultants through `POST /api/users/`.
+(Alternative: `createsuperuser`, then add a Clinic and a doctor user in `/admin/`.)
 
 ## Try the API in Swagger
 

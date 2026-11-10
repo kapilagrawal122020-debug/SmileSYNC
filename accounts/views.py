@@ -3,6 +3,7 @@ import secrets
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.hashers import check_password, make_password
+from django.db import transaction
 from drf_spectacular.utils import extend_schema
 from rest_framework import viewsets
 from rest_framework.authtoken.models import Token
@@ -17,7 +18,8 @@ from patients.models import Patient
 from .access import OWNER, STAFF, ClinicScopedMixin
 from .models import Otp, User
 from .serializers import (
-    DetailSerializer, LoginSerializer, OtpVerifySerializer, PhoneSerializer, TokenResponseSerializer, UserSerializer,
+    DetailSerializer, LoginSerializer, OtpVerifySerializer, PhoneSerializer, RegisterSerializer,
+    TokenResponseSerializer, UserSerializer,
 )
 
 
@@ -42,6 +44,25 @@ class LoginView(APIView):
         if user is None:
             return Response({"detail": "Wrong phone number or password."}, status=401)
         return token_response(user)
+
+
+class RegisterView(APIView):
+    """Doctor self sign-up: creates the clinic and the doctor, and logs them in."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "register"
+
+    @extend_schema(request=RegisterSerializer, responses={201: TokenResponseSerializer})
+    def post(self, request):
+        data = RegisterSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        with transaction.atomic():
+            user = data.save()
+        response = token_response(user)
+        response.status_code = 201
+        return response
 
 
 class LogoutView(APIView):

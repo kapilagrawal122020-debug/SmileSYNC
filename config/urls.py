@@ -32,6 +32,7 @@ router.register("messages", messaging.MessageViewSet, "message")
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/auth/login/", accounts.LoginView.as_view()),
+    path("api/auth/register/", accounts.RegisterView.as_view()),
     path("api/auth/logout/", accounts.LogoutView.as_view()),
     path("api/auth/me/", accounts.MeView.as_view()),
     path("api/auth/otp/request/", accounts.OtpRequestView.as_view()),

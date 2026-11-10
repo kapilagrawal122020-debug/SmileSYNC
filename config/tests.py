@@ -47,6 +47,29 @@ class SmileSyncTests(APITestCase):
         bad = self.client.post("/api/auth/login/", {"phone": "9000000001", "password": "wrong"})
         self.assertEqual(bad.status_code, 401)
 
+    def test_doctor_self_signup_creates_clinic_and_logs_in(self):
+        body = {
+            "role": "doctor", "name": "Kapil Agrawal", "phone": "8979772850", "password": "Kap@123il",
+            "clinic_name": "Kapil Clinic", "city": "Kotdwara", "designation": "BDS",
+            "speciality": "Ortho", "registration_number": "13935",
+        }
+        r = self.client.post("/api/auth/register/", body, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data["user"]["role"], "doctor")
+        user = User.objects.get(phone="8979772850")
+        self.assertEqual(user.clinic.name, "Kapil Clinic")
+        self.assertNotEqual(user.password, "Kap@123il")  # stored hashed
+        self.client.credentials(HTTP_AUTHORIZATION="Token " + r.data["token"])
+        self.assertEqual(self.client.get("/api/auth/me/").data["phone"], "8979772850")
+        self.assertEqual(self.client.get("/api/dashboard/").status_code, 200)
+
+    def test_signup_rejects_duplicates_weak_passwords_and_other_roles(self):
+        ok = {"name": "A", "phone": "8000000001", "password": "Str0ng!pass", "clinic_name": "C"}
+        self.assertEqual(self.client.post("/api/auth/register/", {**ok, "phone": "9000000001"}, format="json").status_code, 400)  # phone taken
+        self.assertEqual(self.client.post("/api/auth/register/", {**ok, "password": "12345"}, format="json").status_code, 400)
+        self.assertEqual(self.client.post("/api/auth/register/", {**ok, "role": "assistant"}, format="json").status_code, 400)
+        self.assertEqual(Clinic.objects.filter(name="C").count(), 0)  # nothing half-created
+
     def test_patient_otp_login_sees_only_own_data(self):
         r = self.client.post("/api/auth/otp/request/", {"phone": "9111111111"})
         code = r.data["dev_otp"]

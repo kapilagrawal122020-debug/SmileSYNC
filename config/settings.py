@@ -1,12 +1,48 @@
-"""SmileSYNC settings. Everything that changes per environment comes from env vars."""
+"""SmileSYNC settings. Everything that changes per environment comes from env vars.
+
+Env vars can be set in the shell or in a `.env` file next to manage.py (see .env.example).
+The `.env` file is what you use on PythonAnywhere, whose web app does not see shell variables.
+"""
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-secret-change-me")
-DEBUG = os.environ.get("DEBUG", "1") == "1"
-ALLOWED_HOSTS = [h for h in os.environ.get("ALLOWED_HOSTS", "*" if DEBUG else "").split(",") if h]
+
+def load_env_file(path):
+    """Tiny .env reader (KEY=value per line). Real environment variables win over the file."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+load_env_file(BASE_DIR / ".env")
+
+# Safe by default: production unless you opt in to DEBUG=1 (development only).
+DEBUG = os.environ.get("DEBUG", "0") == "1"
+
+SECRET_KEY = os.environ.get("SECRET_KEY", "")
+if not SECRET_KEY:
+    if not DEBUG:
+        raise ImproperlyConfigured("Set SECRET_KEY in the environment or in the .env file.")
+    SECRET_KEY = "dev-only-secret-change-me"
+
+# Comma separated, e.g. ALLOWED_HOSTS=yourname.pythonanywhere.com
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get("ALLOWED_HOSTS", "").split(",") if h.strip()]
+if DEBUG and not ALLOWED_HOSTS:
+    ALLOWED_HOSTS = ["*"]
+
+# Behind a HTTPS proxy (PythonAnywhere) the admin login is rejected by CSRF unless the https origin is trusted.
+CSRF_TRUSTED_ORIGINS = [f"https://{h}" for h in ALLOWED_HOSTS if not h.startswith((".", "*"))]
+if not DEBUG:
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -76,7 +112,8 @@ TIME_ZONE = "Asia/Kolkata"
 USE_I18N = True
 USE_TZ = True
 
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"  # `collectstatic` copies the admin's CSS here
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # Uploaded files (X-rays, photos, documents). They are NOT served from MEDIA_URL:

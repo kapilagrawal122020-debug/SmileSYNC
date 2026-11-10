@@ -21,6 +21,53 @@ patient `9111111111` (OTP, shown in the response while `DEBUG=1`).
 Onboard a real clinic: `python manage.py createsuperuser`, open `/admin/`, add a Clinic, then add its doctor user.
 The doctor then creates assistants and consultants through `POST /api/users/`.
 
+## Settings and environment
+
+Settings read environment variables, and a `.env` file next to `manage.py` (copy `.env.example`).
+Production is the default: with `DEBUG` unset the app needs `SECRET_KEY` and `ALLOWED_HOSTS` and refuses to start without a key.
+For local development create a `.env` containing `DEBUG=1`. Never edit `settings.py` on the server.
+
+## Deploy on PythonAnywhere
+
+Needs Python 3.12 or newer (Django 6). Run these in a Bash console on PythonAnywhere:
+
+```bash
+git clone https://github.com/kapilagrawal122020-debug/SmileSYNC.git && cd SmileSYNC
+mkvirtualenv --python=/usr/bin/python3.13 smilesync-env
+pip install -r requirements.txt
+cp .env.example .env && nano .env     # DEBUG=0, a new SECRET_KEY, ALLOWED_HOSTS=<username>.pythonanywhere.com
+python manage.py migrate
+python manage.py createsuperuser      # then add the Clinic and its doctor in /admin/
+python manage.py collectstatic --noinput
+```
+
+On the **Web** tab: add a web app with *Manual configuration* and the same Python version, then set
+
+* **Virtualenv**: `/home/<username>/.virtualenvs/smilesync-env`
+* **Static files**: URL `/static/` -> `/home/<username>/SmileSYNC/staticfiles`
+* **Force HTTPS**: on
+* **WSGI file**: replace the contents with
+
+```python
+import os, sys
+
+path = "/home/<username>/SmileSYNC"
+if path not in sys.path:
+    sys.path.insert(0, path)
+os.environ["DJANGO_SETTINGS_MODULE"] = "config.settings"
+
+from django.core.wsgi import get_wsgi_application
+application = get_wsgi_application()
+```
+
+Then press **Reload**. Updating later: `git pull`, `python manage.py migrate`, `collectstatic`, Reload.
+The `.env` file stays on the server because git ignores it.
+
+If the site shows `502 backend`, open **Web > Log files > Error log**: the last lines name the cause
+(a missing `SECRET_KEY` or `ALLOWED_HOSTS`, a wrong WSGI path, or a virtualenv with the wrong Python version).
+The default SQLite database and the `media/` folder live in the project folder, which PythonAnywhere keeps between restarts.
+Schedule `python manage.py run_job <name>` under the **Tasks** tab (see `messaging/jobs.py`).
+
 ## Layout
 
 | App         | What it holds |

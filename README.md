@@ -73,6 +73,10 @@ application = get_wsgi_application()
 Then press **Reload**. Updating later: `git pull`, `python manage.py migrate`, `collectstatic`, Reload.
 The `.env` file stays on the server because git ignores it.
 
+If the site shows Django's `Using the URLconf defined in mysite.urls` 404 page, the web app is still running
+PythonAnywhere's sample project: fix the WSGI file (`DJANGO_SETTINGS_MODULE = "config.settings"`, path to `SmileSYNC`).
+A web frontend on another domain (Netlify and so on) must be listed in `.env` as `CORS_ALLOWED_ORIGINS=https://your-app.netlify.app`.
+
 If the site shows `502 backend`, open **Web > Log files > Error log**: the last lines name the cause
 (a missing `SECRET_KEY` or `ALLOWED_HOSTS`, a wrong WSGI path, or a virtualenv with the wrong Python version).
 The default SQLite database and the `media/` folder live in the project folder, which PythonAnywhere keeps between restarts.

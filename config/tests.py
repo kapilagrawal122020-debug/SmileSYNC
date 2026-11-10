@@ -207,6 +207,16 @@ class SmileSyncTests(APITestCase):
         self.patient.refresh_from_db()
         self.assertFalse(self.patient.consent_whatsapp)
 
+    # ---- CORS -------------------------------------------------------------------------
+    @override_settings(CORS_ALLOWED_ORIGINS=["https://app.netlify.app"], CORS_ALLOW_ALL_ORIGINS=False)
+    def test_cors_allows_listed_frontend_only(self):
+        ask = {"HTTP_ACCESS_CONTROL_REQUEST_METHOD": "POST", "HTTP_ACCESS_CONTROL_REQUEST_HEADERS": "content-type,authorization"}
+        ok = self.client.options("/api/auth/login/", HTTP_ORIGIN="https://app.netlify.app", **ask)
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(ok["Access-Control-Allow-Origin"], "https://app.netlify.app")
+        bad = self.client.options("/api/auth/login/", HTTP_ORIGIN="https://evil.example", **ask)
+        self.assertNotIn("Access-Control-Allow-Origin", bad)
+
     # ---- admin ------------------------------------------------------------------------
     def test_admin_user_add_page_works(self):
         admin = User.objects.create_superuser("9222222222", "pw12345", name="Root")

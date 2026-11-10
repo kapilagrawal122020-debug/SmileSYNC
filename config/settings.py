@@ -38,6 +38,12 @@ ALLOWED_HOSTS = [h.strip() for h in os.environ.get("ALLOWED_HOSTS", "").split(",
 if DEBUG and not ALLOWED_HOSTS:
     ALLOWED_HOSTS = ["*"]
 
+# Web frontends (e.g. on Netlify) call this API from another domain, so the browser needs CORS headers.
+# List the exact frontend origins, comma separated, e.g. https://my-app.netlify.app
+# (Native mobile apps are not affected by CORS.) With DEBUG=1 any origin is allowed.
+CORS_ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+CORS_ALLOW_ALL_ORIGINS = DEBUG
+
 # Behind a HTTPS proxy (PythonAnywhere) the admin login is rejected by CSRF unless the https origin is trusted.
 CSRF_TRUSTED_ORIGINS = [f"https://{h}" for h in ALLOWED_HOSTS if not h.startswith((".", "*"))]
 if not DEBUG:
@@ -54,6 +60,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework.authtoken",
     "drf_spectacular",
+    "corsheaders",
     "accounts",
     "clinic",
     "patients",
@@ -64,6 +71,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "corsheaders.middleware.CorsMiddleware",  # must sit above CommonMiddleware
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",

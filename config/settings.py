@@ -4,6 +4,7 @@ Env vars can be set in the shell or in a `.env` file next to manage.py (see .env
 The `.env` file is what you use on PythonAnywhere, whose web app does not see shell variables.
 """
 import os
+import secrets
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
@@ -27,11 +28,30 @@ load_env_file(BASE_DIR / ".env")
 # Safe by default: production unless you opt in to DEBUG=1 (development only).
 DEBUG = os.environ.get("DEBUG", "0") == "1"
 
-SECRET_KEY = os.environ.get("SECRET_KEY", "")
-if not SECRET_KEY:
-    if not DEBUG:
-        raise ImproperlyConfigured("Set SECRET_KEY in the environment or in the .env file.")
-    SECRET_KEY = "dev-only-secret-change-me"
+
+
+def get_secret_key():
+    """Django signs admin sessions and CSRF tokens with this key (API tokens do not use it).
+
+    Use SECRET_KEY from the environment if set. Otherwise create a random key once, keep it in
+    `.secret_key` next to manage.py (ignored by git), and reuse it on every start.
+    """
+    key = os.environ.get("SECRET_KEY", "")
+    if key:
+        return key
+    key_file = BASE_DIR / ".secret_key"
+    if key_file.exists() and key_file.read_text().strip():
+        return key_file.read_text().strip()
+    key = secrets.token_urlsafe(50)
+    try:
+        key_file.write_text(key)
+        key_file.chmod(0o600)
+    except OSError:
+        raise ImproperlyConfigured("Cannot write .secret_key. Set SECRET_KEY in the environment instead.")
+    return key
+
+
+SECRET_KEY = get_secret_key()
 
 # Comma separated, e.g. ALLOWED_HOSTS=yourname.pythonanywhere.com
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get("ALLOWED_HOSTS", "").split(",") if h.strip()]

@@ -34,7 +34,8 @@ For the patient app flow use `/api/auth/otp/request/` then `/api/auth/otp/verify
 ## Settings and environment
 
 Settings read environment variables, and a `.env` file next to `manage.py` (copy `.env.example`).
-Production is the default: with `DEBUG` unset the app needs `SECRET_KEY` and `ALLOWED_HOSTS` and refuses to start without a key.
+Production is the default: with `DEBUG` unset the app needs `ALLOWED_HOSTS`. `SECRET_KEY` is optional: if you don't set it,
+the app creates a random key on first start and saves it in `.secret_key` (ignored by git). Back that file up if you use the admin site.
 For local development create a `.env` containing `DEBUG=1`. Never edit `settings.py` on the server.
 
 ## Deploy on PythonAnywhere
@@ -45,7 +46,7 @@ Needs Python 3.12 or newer (Django 6). Run these in a Bash console on PythonAnyw
 git clone https://github.com/kapilagrawal122020-debug/SmileSYNC.git && cd SmileSYNC
 mkvirtualenv --python=/usr/bin/python3.13 smilesync-env
 pip install -r requirements.txt
-cp .env.example .env && nano .env     # DEBUG=0, a new SECRET_KEY, ALLOWED_HOSTS=<username>.pythonanywhere.com
+cp .env.example .env && nano .env     # DEBUG=0, ALLOWED_HOSTS=<username>.pythonanywhere.com, CORS_ALLOWED_ORIGINS=<frontend url>
 python manage.py migrate
 python manage.py createsuperuser      # then add the Clinic and its doctor in /admin/
 python manage.py collectstatic --noinput

@@ -1,0 +1,4 @@
+Django>=5.2
+djangorestframework>=3.16
+tzdata   # needed for Asia/Kolkata on Windows
+# Production extras: gunicorn, psycopg[binary] (Postgres), django-storages (S3 for images)

@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "rest_framework.authtoken",
+    "drf_spectacular",
     "accounts",
     "clinic",
     "patients",
@@ -125,7 +126,21 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 50,
+    "DEFAULT_SCHEMA_CLASS": "config.schema.SmileSchema",
     "DEFAULT_THROTTLE_RATES": {"login": "10/min", "otp": "5/min"},
+}
+
+# Swagger UI is at /api/docs/ and the raw OpenAPI schema at /api/schema/
+SPECTACULAR_SETTINGS = {
+    "TITLE": "SmileSYNC API",
+    "DESCRIPTION": (
+        "Clinic and patient API. Log in with POST /api/auth/login/ (staff) or the OTP endpoints (patients), "
+        "then click Authorize and enter: Token <your token>."
+    ),
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,  # separate request schemas so file uploads show as multipart
+    "SWAGGER_UI_SETTINGS": {"persistAuthorization": True, "displayRequestDuration": True},
 }
 
 # Hygiene photos are deleted after this many days (see `run_job purge-photos`).

@@ -1,4 +1,6 @@
 from django.utils import timezone
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from accounts.access import ClinicScopedSerializer, PhoneField, file_url
@@ -21,6 +23,7 @@ class PatientSerializer(ClinicScopedSerializer):
             "selfie", "selfie_url", "created_at",
         ]
 
+    @extend_schema_field(OpenApiTypes.URI)
     def get_selfie_url(self, obj):
         return file_url(self.context["request"], "patient-selfie", obj, "selfie")
 
@@ -89,6 +92,7 @@ class PatientImageSerializer(ClinicScopedSerializer):
         model = PatientImage
         fields = ["id", "patient", "visit", "kind", "tooth", "stage", "taken_at", "file", "file_url"]
 
+    @extend_schema_field(OpenApiTypes.URI)
     def get_file_url(self, obj):
         return file_url(self.context["request"], "image-file", obj)
 

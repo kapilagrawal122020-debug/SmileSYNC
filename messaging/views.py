@@ -4,6 +4,7 @@ import json
 
 from django.conf import settings
 from django.http import HttpResponse
+from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
 from rest_framework.permissions import AllowAny
@@ -37,6 +38,10 @@ class MessageViewSet(ClinicScopedMixin, viewsets.ReadOnlyModelViewSet):
     action_roles = {"broadcast": OWNER}
     filter_params = {"kind": "kind", "patient": "patient"}
 
+    @extend_schema(request=BroadcastSerializer, responses=inline_serializer("BroadcastResult", {
+        "patients": serializers.IntegerField(),
+        "results": serializers.DictField(child=serializers.IntegerField()),
+    }))
     @action(detail=False, methods=["post"])
     def broadcast(self, request):
         """Festive or camp offer to every patient who consented to WhatsApp (opted-out patients are skipped)."""
@@ -74,6 +79,7 @@ def signature_ok(request):
     return hmac.compare_digest(expected, request.headers.get("X-Hub-Signature-256", ""))
 
 
+@extend_schema(exclude=True)  # called by Meta, not for trying from Swagger
 @api_view(["GET", "POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])

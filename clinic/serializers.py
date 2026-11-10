@@ -1,3 +1,5 @@
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from accounts.access import file_url
@@ -18,6 +20,7 @@ class ClinicSerializer(serializers.ModelSerializer):
             "google_review_url", "website_url", "social_url", "doctors",
         ]
 
+    @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_doctors(self, clinic):
         staff = clinic.staff.filter(role__in=["doctor", "consultant"], is_active=True)
         return [
@@ -45,5 +48,6 @@ class DocumentSerializer(serializers.ModelSerializer):
         model = ClinicDocument
         fields = ["id", "doc_type", "title", "number", "expiry_date", "days_left", "file", "file_url"]
 
+    @extend_schema_field(OpenApiTypes.URI)
     def get_file_url(self, obj):
         return file_url(self.context["request"], "document-file", obj)

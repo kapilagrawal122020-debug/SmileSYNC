@@ -1,4 +1,5 @@
-from rest_framework import viewsets
+from drf_spectacular.utils import extend_schema, inline_serializer
+from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -21,6 +22,10 @@ class StockItemViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
     write_roles = OWNER
     action_roles = {"stock_in": STAFF}
 
+    @extend_schema(responses=inline_serializer("StockAlerts", {
+        "low_stock": StockItemSerializer(many=True),
+        "expiring": StockItemSerializer(many=True),
+    }))
     @action(detail=False)
     def alerts(self, request):
         """Low stock and items expiring in 30 days."""
@@ -31,6 +36,7 @@ class StockItemViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
             "expiring": StockItemSerializer(found["expiring"], many=True, context=ctx).data,
         })
 
+    @extend_schema(request=StockInSerializer, responses=StockItemSerializer)
     @action(detail=True, methods=["post"], url_path="stock-in")
     def stock_in(self, request, pk=None):
         """Log a delivery: {"packs": 5} adds 5 x pack_size to stock."""
@@ -46,6 +52,11 @@ class StockItemViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
         item = change_stock(item, packs * item.pack_size, StockMovement.STOCK_IN, request.user, note=f"{packs} pack(s)")
         return Response(self.get_serializer(item).data)
 
+    @extend_schema(request=CountSerializer, responses=inline_serializer("CountResult", {
+        "item": serializers.CharField(),
+        "quantity": serializers.DecimalField(max_digits=10, decimal_places=2),
+        "variance": serializers.DecimalField(max_digits=10, decimal_places=2),
+    }))
     @action(detail=True, methods=["post"])
     def count(self, request, pk=None):
         """Monthly stock count: set the real quantity and log the variance."""

@@ -1,7 +1,9 @@
 from datetime import date, timedelta
 
 from django.db.models import Avg, Sum
-from rest_framework import mixins, viewsets
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema, inline_serializer
+from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -45,6 +47,7 @@ class DocumentViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
     read_roles = OWNER
     write_roles = OWNER
 
+    @extend_schema(responses=DocumentSerializer(many=True))
     @action(detail=False)
     def expiring(self, request):
         """Documents that expire within 60 days (or already have)."""
@@ -52,6 +55,7 @@ class DocumentViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
         docs = self.get_queryset().filter(expiry_date__isnull=False, expiry_date__lte=limit)
         return Response(DocumentSerializer(docs, many=True, context={"request": request}).data)
 
+    @extend_schema(responses={(200, "application/octet-stream"): OpenApiTypes.BINARY})
     @action(detail=True)
     def file(self, request, pk=None):
         return file_response(self.get_object().file)
@@ -64,6 +68,16 @@ class DashboardView(APIView):
     read_roles = OWNER
     write_roles = OWNER
 
+    @extend_schema(responses=inline_serializer("Dashboard", {
+        "visits_today": serializers.IntegerField(),
+        "low_stock_items": serializers.IntegerField(),
+        "expiring_stock_items": serializers.IntegerField(),
+        "documents_expiring_in_60_days": serializers.IntegerField(),
+        "hygiene_photos_to_review": serializers.IntegerField(),
+        "locked_chairs": serializers.IntegerField(),
+        "dues": serializers.DecimalField(max_digits=12, decimal_places=2),
+        "average_rating_30_days": serializers.FloatField(allow_null=True),
+    }))
     def get(self, request):
         clinic = request.user.clinic
         today = date.today()

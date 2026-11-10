@@ -1,4 +1,5 @@
 Django>=5.2
 djangorestframework>=3.16
+drf-spectacular>=0.28   # Swagger UI at /api/docs/
 tzdata   # needed for Asia/Kolkata on Windows
 # Production extras: gunicorn, psycopg[binary] (Postgres), django-storages (S3 for images)

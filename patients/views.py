@@ -1,4 +1,6 @@
 from django.db.models import Q
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view, inline_serializer
 from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -16,6 +18,12 @@ from .serializers import (
 )
 
 
+BINARY = {(200, "application/octet-stream"): OpenApiTypes.BINARY}
+
+
+@extend_schema_view(
+    list=extend_schema(parameters=[OpenApiParameter("search", str, description="Name or phone contains")])
+)
 class PatientViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
     """Register and manage patients. Search with ?search=name-or-phone or ?phone=9876543210."""
 
@@ -35,6 +43,7 @@ class PatientViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
             qs = qs.filter(Q(name__icontains=search) | Q(phone__icontains=search))
         return qs
 
+    @extend_schema(responses=BINARY)
     @action(detail=True)
     def selfie(self, request, pk=None):
         return file_response(self.get_object().selfie)
@@ -65,6 +74,10 @@ class TreatmentViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(doctor=self.request.user)
 
+    @extend_schema(request=None, responses=inline_serializer("TreatmentComplete", {
+        "treatment": TreatmentSerializer(),
+        "stock_used": serializers.ListField(child=serializers.DictField()),
+    }))
     @action(detail=True, methods=["post"])
     def complete(self, request, pk=None):
         """Mark the treatment done and deduct stock using the clinic's usage rules."""
@@ -73,6 +86,10 @@ class TreatmentViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
         used = deduct_for_treatment(treatment, request.user)
         return Response({"treatment": self.get_serializer(treatment).data, "stock_used": used})
 
+    @extend_schema(request=UseStockSerializer, responses=inline_serializer("UseStockResult", {
+        "item": serializers.CharField(),
+        "left": serializers.DecimalField(max_digits=10, decimal_places=2),
+    }))
     @action(detail=True, methods=["post"], url_path="use-stock")
     def use_stock(self, request, pk=None):
         """For variable items: the doctor taps how many alginate trays, gloves or masks were used."""
@@ -100,6 +117,7 @@ class PatientImageViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(uploaded_by=self.request.user)
 
+    @extend_schema(responses=BINARY)
     @action(detail=True)
     def file(self, request, pk=None):
         return file_response(self.get_object().file)
@@ -165,6 +183,7 @@ class FeedbackViewSet(
                 [patient.name, feedback.rating, feedback.comment[:100] or "-"],
             )
 
+    @extend_schema(request=inline_serializer("FeedbackReply", {"reply": serializers.CharField()}), responses=FeedbackSerializer)
     @action(detail=True, methods=["post"])
     def reply(self, request, pk=None):
         feedback = self.get_object()

@@ -3,6 +3,7 @@ import secrets
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.hashers import check_password, make_password
+from drf_spectacular.utils import extend_schema
 from rest_framework import viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.permissions import AllowAny
@@ -15,7 +16,9 @@ from patients.models import Patient
 
 from .access import OWNER, STAFF, ClinicScopedMixin
 from .models import Otp, User
-from .serializers import LoginSerializer, OtpVerifySerializer, PhoneSerializer, UserSerializer
+from .serializers import (
+    DetailSerializer, LoginSerializer, OtpVerifySerializer, PhoneSerializer, TokenResponseSerializer, UserSerializer,
+)
 
 
 def token_response(user):
@@ -31,6 +34,7 @@ class LoginView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "login"
 
+    @extend_schema(request=LoginSerializer, responses={200: TokenResponseSerializer, 401: DetailSerializer})
     def post(self, request):
         data = LoginSerializer(data=request.data)
         data.is_valid(raise_exception=True)
@@ -41,12 +45,14 @@ class LoginView(APIView):
 
 
 class LogoutView(APIView):
+    @extend_schema(request=None, responses={204: None})
     def post(self, request):
         Token.objects.filter(user=request.user).delete()
         return Response(status=204)
 
 
 class MeView(APIView):
+    @extend_schema(responses=UserSerializer)
     def get(self, request):
         return Response(UserSerializer(request.user).data)
 
@@ -59,6 +65,7 @@ class OtpRequestView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "otp"
 
+    @extend_schema(request=PhoneSerializer, responses=DetailSerializer)
     def post(self, request):
         data = PhoneSerializer(data=request.data)
         data.is_valid(raise_exception=True)
@@ -84,6 +91,7 @@ class OtpVerifyView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "otp"
 
+    @extend_schema(request=OtpVerifySerializer, responses={200: TokenResponseSerializer, 400: DetailSerializer})
     def post(self, request):
         data = OtpVerifySerializer(data=request.data)
         data.is_valid(raise_exception=True)

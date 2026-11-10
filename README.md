@@ -21,6 +21,16 @@ patient `9111111111` (OTP, shown in the response while `DEBUG=1`).
 Onboard a real clinic: `python manage.py createsuperuser`, open `/admin/`, add a Clinic, then add its doctor user.
 The doctor then creates assistants and consultants through `POST /api/users/`.
 
+## Try the API in Swagger
+
+Start the server and open **http://localhost:8000/api/docs/** (raw OpenAPI schema: `/api/schema/`).
+
+1. Open `POST /api/auth/login/`, click *Try it out*, send `{"phone": "9000000001", "password": "doctor123"}` and copy the `token`.
+2. Click **Authorize** at the top and enter `Token <the token>`.
+3. Every endpoint now works from the page. Swagger remembers the token across reloads.
+
+For the patient app flow use `/api/auth/otp/request/` then `/api/auth/otp/verify/` (the code is in the response while `DEBUG=1`).
+
 ## Settings and environment
 
 Settings read environment variables, and a `.env` file next to `manage.py` (copy `.env.example`).

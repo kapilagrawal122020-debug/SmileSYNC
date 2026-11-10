@@ -1,5 +1,7 @@
 import hashlib
 
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
 from accounts.access import ClinicScopedSerializer, file_url
@@ -20,6 +22,7 @@ class HygieneCheckSerializer(ClinicScopedSerializer):
         ]
         read_only_fields = ["taken_by", "taken_at", "status", "review_note", "reviewed_at"]
 
+    @extend_schema_field(OpenApiTypes.URI)
     def get_photo_url(self, obj):
         return file_url(self.context["request"], "hygiene-photo", obj, "photo")
 

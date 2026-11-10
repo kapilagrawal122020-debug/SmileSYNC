@@ -1,6 +1,7 @@
 """All API routes live here so the whole surface is visible in one place."""
 from django.contrib import admin
 from django.urls import include, path
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 from rest_framework.routers import DefaultRouter
 
 from accounts import views as accounts
@@ -37,5 +38,7 @@ urlpatterns = [
     path("api/auth/otp/verify/", accounts.OtpVerifyView.as_view()),
     path("api/dashboard/", clinic.DashboardView.as_view()),
     path("api/whatsapp/webhook/", messaging.whatsapp_webhook),
+    path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
+    path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="docs"),
     path("api/", include(router.urls)),
 ]

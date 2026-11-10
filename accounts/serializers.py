@@ -38,6 +38,15 @@ class UserSerializer(ClinicScopedSerializer):
         return instance
 
 
+class TokenResponseSerializer(serializers.Serializer):
+    token = serializers.CharField()
+    user = UserSerializer()
+
+
+class DetailSerializer(serializers.Serializer):
+    detail = serializers.CharField()
+
+
 class LoginSerializer(serializers.Serializer):
     phone = PhoneField()
     password = serializers.CharField()

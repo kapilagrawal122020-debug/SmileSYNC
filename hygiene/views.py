@@ -1,6 +1,8 @@
 from datetime import timedelta
 
 from django.utils import timezone
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -43,6 +45,10 @@ class HygieneCheckViewSet(
         if check.kind == AFTER_PATIENT:
             unlock_chair_if_complete(check.visit)
 
+    @extend_schema(request=inline_serializer("HygieneReview", {
+        "status": serializers.ChoiceField(choices=["approved", "redo"]),
+        "note": serializers.CharField(required=False),
+    }), responses=HygieneCheckSerializer)
     @action(detail=True, methods=["post"])
     def review(self, request, pk=None):
         """Doctor approves a photo or asks for a redo: {"status": "approved" | "redo", "note": "..."}."""
@@ -57,6 +63,17 @@ class HygieneCheckViewSet(
         check.save()
         return Response(self.get_serializer(check).data)
 
+    @extend_schema(
+        parameters=[OpenApiParameter("days", int, description="Look-back period, default 30")],
+        responses=inline_serializer("HygieneScore", {
+            "days": serializers.IntegerField(),
+            "pending": serializers.IntegerField(),
+            "approved": serializers.IntegerField(),
+            "redo": serializers.IntegerField(),
+            "total": serializers.IntegerField(),
+            "score": serializers.IntegerField(allow_null=True),
+        }),
+    )
     @action(detail=False)
     def score(self, request):
         """Compliance score: share of submitted photos the doctor approved (default last 30 days)."""
@@ -72,6 +89,7 @@ class HygieneCheckViewSet(
             "score": round(100 * counts[HygieneCheck.APPROVED] / total) if total else None,
         })
 
+    @extend_schema(responses={(200, "application/octet-stream"): OpenApiTypes.BINARY})
     @action(detail=True)
     def photo(self, request, pk=None):
         return file_response(self.get_object().photo)

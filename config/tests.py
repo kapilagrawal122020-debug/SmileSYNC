@@ -230,6 +230,128 @@ class SmileSyncTests(APITestCase):
         self.patient.refresh_from_db()
         self.assertFalse(self.patient.consent_whatsapp)
 
+    # ---- advance payments -------------------------------------------------------------
+    def new_advance(self, amount="10000", **extra):
+        body = {"patient": self.patient.id, "amount": amount, "method": "upi", "reference": "UTR9", "note": "For braces", **extra}
+        r = self.client.post("/api/advances/", body, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        return r.data
+
+    def new_invoice(self, amount="34000", **extra):
+        body = {"patient": self.patient.id, "items": [{"description": "Braces", "amount": amount}], **extra}
+        r = self.client.post("/api/invoices/", body, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        return r.data
+
+    def test_advance_is_applied_when_the_invoice_is_created(self):
+        self.login(self.assistant)
+        adv = self.new_advance("10000")
+        self.assertEqual(adv["balance"], "10000.00")
+        self.assertEqual(adv["received_by_name"], "Asha")
+
+        inv = self.new_invoice("34000", apply_advance=True)
+        self.assertEqual((inv["total"], inv["advance_applied"], inv["paid"], inv["due"]), ("34000.00", "10000.00", "10000.00", "24000.00"))
+        self.assertEqual(inv["payments"][0]["method"], "advance")
+        self.assertEqual(inv["payments"][0]["advance"], adv["id"])
+
+        after = self.client.get(f"/api/advances/{adv['id']}/").data
+        self.assertEqual((after["used"], after["balance"]), ("10000.00", "0.00"))
+        s = self.client.get(f"/api/patients/{self.patient.id}/billing/").data
+        self.assertEqual((s["billed"], s["paid"], s["due"], s["advance_balance"]), ("34000.00", "10000.00", "24000.00", "0.00"))
+        self.login(self.doctor)
+        self.assertEqual(self.client.get("/api/dashboard/").data["dues"], Decimal("24000"))  # advance money counts as paid
+
+    def test_without_the_flag_the_advance_is_left_alone(self):
+        self.login(self.assistant)
+        adv = self.new_advance("5000")
+        inv = self.new_invoice("2000")
+        self.assertEqual(inv["paid"], "0.00")
+        self.assertEqual(self.client.get(f"/api/advances/{adv['id']}/").data["balance"], "5000.00")
+
+    def test_oldest_advance_is_used_first_and_can_be_split(self):
+        self.login(self.assistant)
+        older = self.new_advance("3000", received_at=(timezone.now() - timedelta(days=3)).isoformat())
+        newer = self.new_advance("4000")
+        inv = self.new_invoice("5000")
+        r = self.client.post(f"/api/invoices/{inv['id']}/apply-advance/", {}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["due"], "0.00")
+        self.assertEqual(sorted((p["advance"], p["amount"]) for p in r.data["payments"]), sorted([(older["id"], "3000.00"), (newer["id"], "2000.00")]))
+        self.assertEqual(self.client.get(f"/api/advances/{older['id']}/").data["balance"], "0.00")
+        self.assertEqual(self.client.get(f"/api/advances/{newer['id']}/").data["balance"], "2000.00")
+
+    def test_apply_advance_limits(self):
+        self.login(self.assistant)
+        self.new_advance("1000")
+        inv = self.new_invoice("5000")
+        url = f"/api/invoices/{inv['id']}/apply-advance/"
+        self.assertEqual(self.client.post(url, {"amount": "2000"}, format="json").status_code, 400)  # only 1000 available
+        self.assertEqual(self.client.post(url, {"amount": "0"}, format="json").status_code, 400)
+        self.assertEqual(self.client.post(url, {"amount": "400"}, format="json").data["due"], "4600.00")
+        self.assertEqual(self.client.post(url, {}, format="json").data["due"], "4000.00")  # the 600 left
+        self.assertEqual(self.client.post(url, {}, format="json").data["due"], "4000.00")  # nothing left: no error, no change
+        small = self.new_invoice("300")
+        self.assertEqual(self.client.post(f"/api/invoices/{small['id']}/apply-advance/", {"amount": "500"}, format="json").status_code, 400)  # more than due
+
+    def test_a_payment_cannot_claim_to_be_from_an_advance(self):
+        self.login(self.assistant)
+        inv = self.new_invoice("1000")
+        r = self.client.post("/api/payments/", {"invoice": inv["id"], "amount": "500", "method": "advance"}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_refund_is_recorded_and_doctor_only(self):
+        self.login(self.assistant)
+        adv = self.new_advance("5000")
+        inv = self.new_invoice("1000")
+        self.client.post(f"/api/invoices/{inv['id']}/apply-advance/", {}, format="json")  # 1000 used, 4000 left
+        self.assertEqual(self.client.post(f"/api/advances/{adv['id']}/refund/", {"amount": "100"}, format="json").status_code, 403)
+
+        self.login(self.doctor)
+        url = f"/api/advances/{adv['id']}/refund/"
+        self.assertEqual(self.client.post(url, {"amount": "4500"}, format="json").status_code, 400)  # more than is left
+        r = self.client.post(url, {"amount": "1500", "note": "Treatment cancelled"}, format="json")
+        self.assertEqual((r.data["refunded"], r.data["balance"]), ("1500.00", "2500.00"))
+        r = self.client.post(url, {}, format="json")  # no amount: the rest
+        self.assertEqual((r.data["refunded"], r.data["balance"]), ("4000.00", "0.00"))
+        self.assertEqual(len(r.data["refunds"]), 2)  # one row per refund
+        self.assertEqual(self.client.post(url, {}, format="json").status_code, 400)  # nothing left
+
+    def test_delete_only_unused_advances_by_the_doctor(self):
+        self.login(self.assistant)
+        used = self.new_advance("800", received_at=(timezone.now() - timedelta(days=1)).isoformat())  # older, so used first
+        mistake = self.new_advance("700")
+        inv = self.new_invoice("800")
+        self.client.post(f"/api/invoices/{inv['id']}/apply-advance/", {"amount": "800"}, format="json")
+        self.assertEqual(self.client.delete(f"/api/advances/{mistake['id']}/").status_code, 403)  # assistants cannot delete money records
+        self.login(self.doctor)
+        self.assertEqual(self.client.delete(f"/api/advances/{used['id']}/").status_code, 400)
+        self.assertEqual(self.client.delete(f"/api/advances/{mistake['id']}/").status_code, 204)
+
+    def test_advance_input_rules(self):
+        self.login(self.assistant)
+        base = {"patient": self.patient.id, "method": "cash"}
+        for bad in ({"amount": "0"}, {"amount": "-5"}, {"amount": "100", "received_at": (timezone.now() + timedelta(days=2)).isoformat()}):
+            self.assertEqual(self.client.post("/api/advances/", {**base, **bad}, format="json").status_code, 400, bad)
+        past = self.client.post("/api/advances/", {**base, "amount": "100", "received_at": (timezone.now() - timedelta(days=30)).isoformat()}, format="json")
+        self.assertEqual(past.status_code, 201)  # money taken earlier can be recorded with its real date
+        self.assertEqual(self.client.patch(f"/api/advances/{past.data['id']}/", {"amount": "999"}, format="json").status_code, 405)  # never edited
+
+    def test_advances_stay_inside_the_clinic_and_patients_see_their_own(self):
+        self.login(self.assistant)
+        adv = self.new_advance("2500")
+        self.login(self.other_doctor)
+        self.assertEqual(self.client.get(f"/api/advances/{adv['id']}/").status_code, 404)
+        self.assertEqual(self.client.get(f"/api/patients/{self.patient.id}/billing/").status_code, 404)
+        self.assertEqual(self.client.post("/api/advances/", {"patient": self.patient.id, "amount": "1"}, format="json").status_code, 400)
+
+        self.patient.user = User.objects.create_user("9111111111", None, role="patient")
+        self.patient.save()
+        self.login(self.patient.user)
+        self.assertEqual(self.client.get("/api/advances/").data["count"], 1)
+        self.assertEqual(self.client.get(f"/api/patients/{self.patient.id}/billing/").data["advance_balance"], "2500.00")
+        self.assertEqual(self.client.post("/api/advances/", {"patient": self.patient.id, "amount": "1"}, format="json").status_code, 403)
+        self.assertEqual(self.client.post(f"/api/advances/{adv['id']}/refund/", {}, format="json").status_code, 403)
+
     # ---- CORS -------------------------------------------------------------------------
     @override_settings(CORS_ALLOWED_ORIGINS=["https://app.netlify.app"], CORS_ALLOW_ALL_ORIGINS=False)
     def test_cors_allows_listed_frontend_only(self):

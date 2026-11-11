@@ -118,6 +118,12 @@ Send `Authorization: Token <token>`. Every view lists the roles that may read an
   4 after-patient hygiene photos are submitted. A locked chair cannot start a visit.
 * **Hygiene photo integrity**: server timestamp, SHA-256 hash, and a repeated photo is rejected.
   "Camera only" must be enforced in the mobile app (use the camera API, no gallery picker); a server cannot tell.
+* **Advance payments** (`/api/advances/`): money a patient pays before it is billed. It stays as credit on the patient.
+  Send `apply_advance: true` when creating an invoice, or call `POST /api/invoices/{id}/apply-advance/`, to pay an invoice
+  from it (oldest advance first, split across advances if needed). That creates normal payments with method `advance`, so
+  totals, dues and the dashboard need no special case. Advances are never edited. The doctor can refund what is left
+  (every refund is its own record) and delete an entry only if it was never used or refunded. `GET /api/patients/{id}/billing/`
+  returns billed, paid, due and the advance available.
 * **Compliance score** = approved photos / all photos in the period.
 * **Stock** can go negative if usage is recorded after the shelf is empty. The monthly count fixes it and logs the variance.
 

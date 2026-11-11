@@ -1,3 +1,6 @@
+from datetime import timedelta
+from decimal import Decimal
+
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema_field
@@ -7,7 +10,10 @@ from accounts.access import ClinicScopedSerializer, PhoneField, file_url
 from accounts.validators import UPLOAD_VALIDATORS
 from clinic.models import Chair
 
-from .models import Feedback, Invoice, InvoiceItem, Patient, PatientImage, Payment, Treatment, Visit
+from . import billing
+from .models import (
+    Advance, AdvanceRefund, Feedback, Invoice, InvoiceItem, Patient, PatientImage, Payment, Treatment, Visit,
+)
 
 
 class PatientSerializer(ClinicScopedSerializer):
@@ -103,24 +109,48 @@ class InvoiceItemSerializer(serializers.ModelSerializer):
         fields = ["id", "description", "amount"]
 
 
+class PaymentLineSerializer(serializers.ModelSerializer):
+    """A payment as shown inside an invoice."""
+
+    class Meta:
+        model = Payment
+        fields = ["id", "amount", "method", "reference", "advance", "paid_at"]
+
+
 class InvoiceSerializer(ClinicScopedSerializer):
     items = InvoiceItemSerializer(many=True)
+    payments = PaymentLineSerializer(many=True, read_only=True)
+    advance_applied = serializers.SerializerMethodField()
+    # Send true to pay the new invoice from the patient's advance straight away.
+    apply_advance = serializers.BooleanField(write_only=True, required=False, default=False)
     total = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
     paid = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
     due = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
 
     class Meta:
         model = Invoice
-        fields = ["id", "patient", "visit", "notes", "items", "total", "paid", "due", "created_at"]
+        fields = [
+            "id", "patient", "visit", "notes", "items", "total", "advance_applied", "paid", "due",
+            "payments", "apply_advance", "created_at",
+        ]
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_advance_applied(self, obj):
+        total = sum((p.amount for p in obj.payments.all() if p.method == Payment.ADVANCE), Decimal("0"))
+        return serializers.DecimalField(max_digits=10, decimal_places=2).to_representation(total)
 
     def create(self, validated_data):
         items = validated_data.pop("items")
+        use_advance = validated_data.pop("apply_advance", False)
         invoice = Invoice.objects.create(**validated_data)
         InvoiceItem.objects.bulk_create(InvoiceItem(invoice=invoice, **i) for i in items)
+        if use_advance:
+            billing.apply_advance(invoice, None, self.context["request"].user)
         return invoice
 
     def update(self, instance, validated_data):
         items = validated_data.pop("items", None)
+        validated_data.pop("apply_advance", None)  # only used when creating; use the apply-advance action later
         instance = super().update(instance, validated_data)
         if items is not None:  # replace the item list
             instance.items.all().delete()
@@ -131,8 +161,13 @@ class InvoiceSerializer(ClinicScopedSerializer):
 class PaymentSerializer(ClinicScopedSerializer):
     class Meta:
         model = Payment
-        fields = ["id", "invoice", "amount", "method", "reference", "paid_at"]
-        read_only_fields = ["paid_at"]
+        fields = ["id", "invoice", "amount", "method", "reference", "advance", "paid_at"]
+        read_only_fields = ["advance", "paid_at"]
+
+    def validate_method(self, value):
+        if value == Payment.ADVANCE:
+            raise serializers.ValidationError("Use the apply-advance action to pay from an advance.")
+        return value
 
     def validate_amount(self, value):
         if value <= 0:
@@ -156,3 +191,53 @@ class FeedbackSerializer(ClinicScopedSerializer):
         if not 1 <= value <= 5:
             raise serializers.ValidationError("Rating must be from 1 to 5.")
         return value
+
+
+class AdvanceRefundSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AdvanceRefund
+        fields = ["id", "amount", "note", "refunded_at"]
+
+
+class AdvanceSerializer(ClinicScopedSerializer):
+    received_by_name = serializers.CharField(source="received_by.name", read_only=True, default="")
+    used = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    refunded = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    balance = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    refunds = AdvanceRefundSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Advance
+        fields = [
+            "id", "patient", "amount", "method", "reference", "note", "received_at", "received_by_name",
+            "used", "refunded", "balance", "refunds", "created_at",
+        ]
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError("Amount must be more than zero.")
+        return value
+
+    def validate_received_at(self, value):
+        if value > timezone.now() + timedelta(minutes=5):
+            raise serializers.ValidationError("The date received cannot be in the future.")
+        return value
+
+
+class RefundSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0.01"), required=False)  # default: all that is left
+    note = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+
+
+class BillingSummarySerializer(serializers.Serializer):
+    billed = serializers.DecimalField(max_digits=12, decimal_places=2)
+    paid = serializers.DecimalField(max_digits=12, decimal_places=2)  # includes money paid from advances
+    due = serializers.DecimalField(max_digits=12, decimal_places=2)
+    advance_received = serializers.DecimalField(max_digits=12, decimal_places=2)
+    advance_used = serializers.DecimalField(max_digits=12, decimal_places=2)
+    advance_refunded = serializers.DecimalField(max_digits=12, decimal_places=2)
+    advance_balance = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+
+class ApplyAdvanceSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)  # default: as much as possible

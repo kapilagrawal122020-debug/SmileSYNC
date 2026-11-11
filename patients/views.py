@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.db.models import Q
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view, inline_serializer
@@ -11,10 +12,11 @@ from inventory.services import change_stock, deduct_for_treatment
 from inventory.models import StockMovement
 from messaging.services import alert_doctors
 
-from .models import Feedback, Invoice, Patient, PatientImage, Payment, Treatment, Visit
+from . import billing
+from .models import Advance, AdvanceRefund, Feedback, Invoice, Patient, PatientImage, Payment, Treatment, Visit
 from .serializers import (
-    FeedbackSerializer, InvoiceSerializer, PatientImageSerializer, PatientSerializer,
-    PaymentSerializer, TreatmentSerializer, VisitSerializer,
+    AdvanceSerializer, ApplyAdvanceSerializer, BillingSummarySerializer, FeedbackSerializer, InvoiceSerializer, PatientImageSerializer,
+    PatientSerializer, PaymentSerializer, RefundSerializer, TreatmentSerializer, VisitSerializer,
 )
 
 
@@ -47,6 +49,12 @@ class PatientViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
     @action(detail=True)
     def selfie(self, request, pk=None):
         return file_response(self.get_object().selfie)
+
+    @extend_schema(responses=BillingSummarySerializer)
+    @action(detail=True)
+    def billing(self, request, pk=None):
+        """Billed, paid, due and the advance still available, for the Billing tab."""
+        return Response(BillingSummarySerializer(billing.summary(self.get_object())).data)
 
 
 class VisitViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
@@ -131,6 +139,60 @@ class InvoiceViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
     read_roles = ALL
     write_roles = STAFF
     filter_params = {"patient": "patient", "visit": "visit"}
+
+    @extend_schema(request=ApplyAdvanceSerializer, responses=InvoiceSerializer)
+    @action(detail=True, methods=["post"], url_path="apply-advance")
+    def apply_advance(self, request, pk=None):
+        """Pay this invoice from the patient's advance. Send {"amount": 5000} or nothing for as much as possible."""
+        invoice = self.get_object()
+        data = ApplyAdvanceSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        billing.apply_advance(invoice, data.validated_data.get("amount"), request.user)
+        return Response(self.get_serializer(self.get_object()).data)
+
+
+class AdvanceViewSet(
+    ClinicScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.CreateModelMixin,
+    mixins.DestroyModelMixin, viewsets.GenericViewSet,
+):
+    """Advance payments. Record them here, use them on invoices, refund what is left (doctor only).
+
+    Filter with ?patient=3. An advance is never edited. Delete is only for a mistake: the doctor can
+    remove an advance that has not been used or refunded.
+    """
+
+    queryset = Advance.objects.select_related("patient", "received_by").prefetch_related("payments", "refunds")
+    serializer_class = AdvanceSerializer
+    clinic_lookup = "patient__clinic"
+    patient_lookup = "patient__user"
+    read_roles = ALL
+    write_roles = STAFF
+    action_roles = {"destroy": OWNER, "refund": OWNER}
+    filter_params = {"patient": "patient"}
+
+    def perform_create(self, serializer):
+        serializer.save(received_by=self.request.user)
+
+    def perform_destroy(self, advance):
+        if advance.payments.exists() or advance.refunds.exists():
+            raise serializers.ValidationError("This advance has been used or refunded, so it cannot be deleted.")
+        advance.delete()
+
+    @extend_schema(request=RefundSerializer, responses=AdvanceSerializer)
+    @action(detail=True, methods=["post"])
+    def refund(self, request, pk=None):
+        """Give unused advance back: {"amount": 2000, "note": "..."}. Without an amount, all that is left."""
+        data = RefundSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        with transaction.atomic():
+            advance = self.get_object()
+            amount = data.validated_data.get("amount", advance.balance)
+            if amount <= 0 or amount > advance.balance:
+                raise serializers.ValidationError({"amount": f"Only {advance.balance} is left to refund."})
+            AdvanceRefund.objects.create(
+                advance=advance, amount=amount, note=data.validated_data["note"], refunded_by=request.user
+            )
+        return Response(self.get_serializer(self.get_object()).data)
 
 
 class PaymentViewSet(

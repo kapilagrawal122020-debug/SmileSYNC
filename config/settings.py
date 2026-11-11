@@ -167,6 +167,10 @@ SPECTACULAR_SETTINGS = {
     ),
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "ENUM_NAME_OVERRIDES": {  # payments and advances both have a "method" field
+        "PaymentMethodEnum": "patients.models.Payment.METHOD_CHOICES",
+        "AdvanceMethodEnum": "patients.models.Advance.METHOD_CHOICES",
+    },
     "COMPONENT_SPLIT_REQUEST": True,  # separate request schemas so file uploads show as multipart
     "SWAGGER_UI_SETTINGS": {"persistAuthorization": True, "displayRequestDuration": True},
 }

@@ -171,12 +171,18 @@ class InvoiceItem(models.Model):
 class Payment(models.Model):
     """A payment received. UPI payments are recorded here with the UTR as the reference."""
 
-    METHOD_CHOICES = [("cash", "Cash"), ("upi", "UPI"), ("card", "Card"), ("other", "Other")]
+    ADVANCE = "advance"  # paid out of the patient's advance (see Advance); not chosen by hand
+    METHOD_CHOICES = [
+        ("cash", "Cash"), ("upi", "UPI"), ("card", "Card"), ("other", "Other"), (ADVANCE, "From advance"),
+    ]
 
     invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="payments")
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     method = models.CharField(max_length=10, choices=METHOD_CHOICES, default="cash")
     reference = models.CharField(max_length=100, blank=True)
+    advance = models.ForeignKey(  # which advance this payment was taken from, if any
+        "Advance", null=True, blank=True, on_delete=models.PROTECT, related_name="payments"
+    )
     paid_at = models.DateTimeField(auto_now_add=True)
     received_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+"
@@ -184,6 +190,58 @@ class Payment(models.Model):
 
     class Meta:
         ordering = ["-paid_at"]
+
+
+class Advance(models.Model):
+    """Money a patient paid before it was billed. It stays as credit until applied to an invoice.
+
+    Balance = amount - payments taken from it - refunds. Nothing here is edited afterwards:
+    use the invoice (apply) or a refund, so every rupee has a trail.
+    """
+
+    METHOD_CHOICES = [("cash", "Cash"), ("upi", "UPI"), ("card", "Card"), ("other", "Other")]
+
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="advances")
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    method = models.CharField(max_length=10, choices=METHOD_CHOICES, default="cash")
+    reference = models.CharField(max_length=100, blank=True)  # UPI UTR, cheque number...
+    note = models.CharField(max_length=200, blank=True)  # e.g. "For braces"
+    received_at = models.DateTimeField(default=timezone.now)  # can be a past date for money taken earlier
+    received_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)  # when it was entered in the system
+
+    class Meta:
+        ordering = ["-received_at", "-id"]
+
+    # These read the prefetched rows when the queryset prefetches "payments" and "refunds".
+    @property
+    def used(self):
+        return sum((p.amount for p in self.payments.all()), Decimal("0"))
+
+    @property
+    def refunded(self):
+        return sum((r.amount for r in self.refunds.all()), Decimal("0"))
+
+    @property
+    def balance(self):
+        return self.amount - self.used - self.refunded
+
+
+class AdvanceRefund(models.Model):
+    """Unused advance given back to the patient. One row per refund."""
+
+    advance = models.ForeignKey(Advance, on_delete=models.CASCADE, related_name="refunds")
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    note = models.CharField(max_length=200, blank=True)
+    refunded_at = models.DateTimeField(auto_now_add=True)
+    refunded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+"
+    )
+
+    class Meta:
+        ordering = ["refunded_at"]
 
 
 class Feedback(models.Model):

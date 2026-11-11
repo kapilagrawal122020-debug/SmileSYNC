@@ -123,7 +123,10 @@ Send `Authorization: Token <token>`. Every view lists the roles that may read an
   from it (oldest advance first, split across advances if needed). That creates normal payments with method `advance`, so
   totals, dues and the dashboard need no special case. Advances are never edited. The doctor can refund what is left
   (every refund is its own record) and delete an entry only if it was never used or refunded. `GET /api/patients/{id}/billing/`
-  returns billed, paid, due and the advance available.
+  returns billed, paid, due, the advance available and `due_after_advance` (what is left to pay if the unused advance is applied).
+  An invoice can also be created with money already paid: `paid_now` (with `paid_method`, `paid_reference`), e.g. Braces 34000
+  with `paid_now: 20000` gives paid 20000 and due 14000. If `apply_advance` is also true the advance is taken first. A request
+  that fails saves nothing.
 * **Compliance score** = approved photos / all photos in the period.
 * **Stock** can go negative if usage is recorded after the shelf is empty. The monthly count fixes it and logs the variance.
 

@@ -69,6 +69,7 @@ def summary(patient):
     received = sum((a.amount for a in advances), ZERO)
     used = sum((a.used for a in advances), ZERO)
     refunded = sum((a.refunded for a in advances), ZERO)
+    balance = received - used - refunded
     return {
         "billed": billed,
         "paid": paid,  # includes money paid from advances
@@ -76,5 +77,10 @@ def summary(patient):
         "advance_received": received,
         "advance_used": used,
         "advance_refunded": refunded,
-        "advance_balance": received - used - refunded,
+        "advance_balance": balance,
+        "due_after_advance": due_after_advance(billed - paid, balance),
     }
+
+
+def due_after_advance(due, advance_left):
+    return max(due - advance_left, ZERO)

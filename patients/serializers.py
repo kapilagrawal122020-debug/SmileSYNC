@@ -1,6 +1,7 @@
 from datetime import timedelta
 from decimal import Decimal
 
+from django.db import transaction
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema_field
@@ -123,6 +124,14 @@ class InvoiceSerializer(ClinicScopedSerializer):
     advance_applied = serializers.SerializerMethodField()
     # Send true to pay the new invoice from the patient's advance straight away.
     apply_advance = serializers.BooleanField(write_only=True, required=False, default=False)
+    # Money the patient already paid for this invoice, e.g. 20000 of a 34000 bill. Creates the payment too.
+    paid_now = serializers.DecimalField(
+        max_digits=10, decimal_places=2, min_value=Decimal("0.01"), write_only=True, required=False
+    )
+    paid_method = serializers.ChoiceField(
+        choices=[m for m in Payment.METHOD_CHOICES if m[0] != Payment.ADVANCE], write_only=True, required=False, default="cash"
+    )
+    paid_reference = serializers.CharField(max_length=100, write_only=True, required=False, allow_blank=True, default="")
     total = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
     paid = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
     due = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
@@ -131,7 +140,7 @@ class InvoiceSerializer(ClinicScopedSerializer):
         model = Invoice
         fields = [
             "id", "patient", "visit", "notes", "items", "total", "advance_applied", "paid", "due",
-            "payments", "apply_advance", "created_at",
+            "payments", "apply_advance", "paid_now", "paid_method", "paid_reference", "created_at",
         ]
 
     @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
@@ -139,18 +148,38 @@ class InvoiceSerializer(ClinicScopedSerializer):
         total = sum((p.amount for p in obj.payments.all() if p.method == Payment.ADVANCE), Decimal("0"))
         return serializers.DecimalField(max_digits=10, decimal_places=2).to_representation(total)
 
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        paid = attrs.get("paid_now")
+        if self.instance is None and paid:
+            total = sum((i["amount"] for i in attrs["items"]), Decimal("0"))
+            credit = billing.advance_balance(attrs["patient"]) if attrs.get("apply_advance") else Decimal("0")
+            left = total - min(total, credit)  # what is still due once the advance (if used) is taken off
+            if paid > left:
+                raise serializers.ValidationError({"paid_now": f"More than the amount due ({left})."})
+        return attrs
+
+    @transaction.atomic
     def create(self, validated_data):
         items = validated_data.pop("items")
         use_advance = validated_data.pop("apply_advance", False)
+        paid_now = validated_data.pop("paid_now", None)
+        method = validated_data.pop("paid_method", "cash")
+        reference = validated_data.pop("paid_reference", "")
+        user = self.context["request"].user
+
         invoice = Invoice.objects.create(**validated_data)
         InvoiceItem.objects.bulk_create(InvoiceItem(invoice=invoice, **i) for i in items)
         if use_advance:
-            billing.apply_advance(invoice, None, self.context["request"].user)
+            billing.apply_advance(invoice, None, user)  # the advance is taken first, then the money paid now
+        if paid_now:
+            Payment.objects.create(invoice=invoice, amount=paid_now, method=method, reference=reference, received_by=user)
         return invoice
 
     def update(self, instance, validated_data):
         items = validated_data.pop("items", None)
-        validated_data.pop("apply_advance", None)  # only used when creating; use the apply-advance action later
+        for only_on_create in ("apply_advance", "paid_now", "paid_method", "paid_reference"):
+            validated_data.pop(only_on_create, None)  # later payments go through /payments/ or apply-advance
         instance = super().update(instance, validated_data)
         if items is not None:  # replace the item list
             instance.items.all().delete()
@@ -237,6 +266,7 @@ class BillingSummarySerializer(serializers.Serializer):
     advance_used = serializers.DecimalField(max_digits=12, decimal_places=2)
     advance_refunded = serializers.DecimalField(max_digits=12, decimal_places=2)
     advance_balance = serializers.DecimalField(max_digits=12, decimal_places=2)
+    due_after_advance = serializers.DecimalField(max_digits=12, decimal_places=2)  # what is left to pay if the advance is used
 
 
 class ApplyAdvanceSerializer(serializers.Serializer):

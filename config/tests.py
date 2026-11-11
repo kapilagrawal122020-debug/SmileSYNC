@@ -352,6 +352,46 @@ class SmileSyncTests(APITestCase):
         self.assertEqual(self.client.post("/api/advances/", {"patient": self.patient.id, "amount": "1"}, format="json").status_code, 403)
         self.assertEqual(self.client.post(f"/api/advances/{adv['id']}/refund/", {}, format="json").status_code, 403)
 
+    # ---- paying an invoice at creation, and the dues that are left -----------------------
+    def test_invoice_created_with_money_already_paid(self):
+        self.login(self.assistant)
+        inv = self.new_invoice("34000", paid_now="20000", paid_method="upi", paid_reference="UTR55")
+        self.assertEqual((inv["total"], inv["paid"], inv["due"], inv["advance_applied"]), ("34000.00", "20000.00", "14000.00", "0.00"))
+        self.assertEqual((inv["payments"][0]["method"], inv["payments"][0]["amount"], inv["payments"][0]["reference"]), ("upi", "20000.00", "UTR55"))
+        self.login(self.doctor)
+        self.assertEqual(self.client.get("/api/dashboard/").data["dues"], Decimal("14000"))
+
+    def test_advance_and_money_paid_now_together(self):
+        self.login(self.assistant)
+        self.new_advance("10000")
+        inv = self.new_invoice("34000", apply_advance=True, paid_now="20000")
+        self.assertEqual((inv["paid"], inv["advance_applied"], inv["due"]), ("30000.00", "10000.00", "4000.00"))
+        self.assertEqual(sorted(p["method"] for p in inv["payments"]), ["advance", "cash"])
+
+    def test_paid_now_cannot_exceed_what_is_due_and_nothing_is_saved(self):
+        from patients.models import Invoice
+        self.login(self.assistant)
+        body = {"patient": self.patient.id, "items": [{"description": "Braces", "amount": "34000"}]}
+        r = self.client.post("/api/invoices/", {**body, "paid_now": "40000"}, format="json")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("paid_now", r.data)
+        self.new_advance("10000")
+        too_much = self.client.post("/api/invoices/", {**body, "apply_advance": True, "paid_now": "25000"}, format="json")  # only 24000 is due after the advance
+        self.assertEqual(too_much.status_code, 400)
+        self.assertEqual(self.client.post("/api/invoices/", {**body, "paid_now": "0"}, format="json").status_code, 400)
+        self.assertEqual(self.client.post("/api/invoices/", {**body, "paid_now": "100", "paid_method": "advance"}, format="json").status_code, 400)
+        self.assertEqual(Invoice.objects.count(), 0)  # the failed attempts left no invoice behind
+
+    def test_billing_summary_shows_what_is_left_after_the_advance(self):
+        self.login(self.assistant)
+        self.new_advance("20000")
+        self.new_invoice("34000")  # advance not used yet
+        s = self.client.get(f"/api/patients/{self.patient.id}/billing/").data
+        self.assertEqual((s["due"], s["advance_balance"], s["due_after_advance"]), ("34000.00", "20000.00", "14000.00"))
+        self.new_advance("30000")  # more advance than is due: nothing left to pay, never negative
+        s = self.client.get(f"/api/patients/{self.patient.id}/billing/").data
+        self.assertEqual(s["due_after_advance"], "0.00")
+
     # ---- CORS -------------------------------------------------------------------------
     @override_settings(CORS_ALLOWED_ORIGINS=["https://app.netlify.app"], CORS_ALLOW_ALL_ORIGINS=False)
     def test_cors_allows_listed_frontend_only(self):

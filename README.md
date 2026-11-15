@@ -95,6 +95,9 @@ Schedule `python manage.py run_job <name>` under the **Tasks** tab (see `messagi
 | `inventory` | Item master, usage rules, stock-in, auto-deduct, alerts, monthly count |
 | `hygiene`   | Photo-verified checks, doctor review, chair unlock, compliance score |
 | `messaging` | WhatsApp sender, message log, broadcasts, reply webhook, scheduled jobs |
+| `masterdata` | Master lists (dropdown values) the platform admin edits: lists, values, import, export, seed |
+| `audit`     | Append-only log of sign-ins, list changes, account changes, history reviews |
+| `platform_admin` | The super admin dashboard API (`/api/platform/*`) |
 
 All routes are in `config/urls.py`.
 
@@ -107,6 +110,27 @@ Send `Authorization: Token <token>`. Every view lists the roles that may read an
 * A related object from another clinic (patient, visit, item...) is rejected on write.
 * Private notes are doctor-only. Treatment plans: assistants view, doctor and consultants edit.
 * Files are never public. Every download is an API endpoint that checks role and clinic.
+
+## Platform admin (super admin) dashboard
+
+One person per platform (you, the product owner) manages the lists, clinics and accounts. Everything is under `/api/platform/`
+and guarded by a single permission, `IsSuperAdmin` (`accounts/access.py`). Anonymous callers get 401. Doctors, consultants,
+assistants and patients get 403. The web app shows the **Admin** menu only to this user and sends everyone else away from `/admin`.
+
+* **Create the first admin** on the server: `python manage.py createsuperuser` (phone number and password). That user gets the
+  `super_admin` role. Nobody can become one through `/api/users/`, a role change or sign-up. Another admin can be added from
+  the dashboard (`POST /api/platform/admins/`).
+* **A platform admin cannot read clinic data.** Patients, visits, treatments and invoices return 403 for this role; the overview
+  shows counts only.
+* `GET /api/platform/overview/`, `clinics/` (list, edit name, city, address, phone), `users/` (filter, turn on or off, `set-password`),
+  `audit/` (filter, search, paged), and the lists below.
+* **Master lists**: `GET /api/platform/lists/`, `GET /api/platform/lists/{key}/`, `POST .../{key}/values/`, `PATCH /api/platform/list-values/{id}/`,
+  `POST .../{key}/reorder/`, `GET .../{key}/export/?type=csv` (JSON by default), `POST /api/platform/lists/import/?dry_run=1`.
+  Rules: a value's **code never changes**, values are **turned off, never deleted**, and values marked `is_system` cannot be turned off
+  because the app's logic depends on them. Everyone signed in reads the active values from `GET /api/lists/` (add `?keys=a,b`).
+* **Seed**: the 67 lists (1035 values) in `masterdata/seed/master_lists.json` are loaded by `python manage.py migrate`. To load again
+  or after adding new lists: `python manage.py seed_lists`. It never overwrites a label you edited.
+* The `?format=` query is reserved by Django REST Framework, so exports use `?type=csv`.
 
 ## Behaviour worth knowing
 
@@ -128,6 +152,15 @@ Send `Authorization: Token <token>`. Every view lists the roles that may read an
   with `paid_now: 20000` gives paid 20000 and due 14000. If `apply_advance` is also true the advance is taken first. A request
   that fails saves nothing.
 * **Compliance score** = approved photos / all photos in the period.
+* **Tooth numbers** use FDI two-digit codes: 11 to 48 for adults and 51 to 85 for children. `12 14,16` is saved as `12, 14, 16`;
+  anything else (for example 19 or 99) is refused with a message.
+* **Medical history** (`GET` and `POST /api/patients/{id}/history/`) is a checklist of codes from the lists `medical-conditions`, `allergies`,
+  `flagged-medications` and `habits`. Each review is a new version; earlier ones stay on file. `GET` returns the `alerts` shown in the
+  red banner: allergies, flagged medicines and conditions that change treatment. Infections such as hepatitis and HIV are deliberately
+  not alerts, because standard precautions apply to everyone and status is confidential.
+* **Appointments** have `duration_minutes` (default 30) and a computed `end_at`. A chair or a doctor cannot be in two active visits at once
+  (touching end to start is fine). Cancelling can carry a `cancel_reason` from the `cancellation-reasons` list.
+  `POST /api/visits/{id}/reschedule/ {"scheduled_at": ...}` moves a visit, re-checks overlaps and resets the reminder.
 * **Stock** can go negative if usage is recorded after the shelf is empty. The monthly count fixes it and logs the variance.
 
 ## WhatsApp

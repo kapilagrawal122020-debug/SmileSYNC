@@ -11,17 +11,20 @@ from .models import User
 class UserSerializer(ClinicScopedSerializer):
     phone = PhoneField(validators=[UniqueValidator(queryset=User.objects.all(), message="Phone already in use.")])
     password = serializers.CharField(write_only=True, min_length=6, required=False)
+    is_super_admin = serializers.BooleanField(source="is_superuser", read_only=True)  # the app shows the Admin menu from this
 
     class Meta:
         model = User
         fields = [
             "id", "phone", "name", "role", "designation", "speciality",
-            "registration_number", "is_active", "password",
+            "registration_number", "is_active", "password", "is_super_admin",
         ]
 
     def validate_role(self, value):
         if value == User.PATIENT:
             raise serializers.ValidationError("Patients register through the patient endpoint.")
+        if value == User.SUPER_ADMIN:
+            raise serializers.ValidationError("Choose doctor, consultant or assistant.")
         return value
 
     def validate(self, attrs):
@@ -41,6 +44,9 @@ class UserSerializer(ClinicScopedSerializer):
         return instance
 
 
+SIGNUP_ROLES = [User.DOCTOR]  # sign-up creates doctors only
+
+
 class RegisterSerializer(serializers.Serializer):
     """Self sign-up: a doctor creates their clinic and their own login in one step."""
 
@@ -52,7 +58,7 @@ class RegisterSerializer(serializers.Serializer):
     designation = serializers.CharField(max_length=100, required=False, allow_blank=True)
     speciality = serializers.CharField(max_length=100, required=False, allow_blank=True)
     registration_number = serializers.CharField(max_length=50, required=False, allow_blank=True)
-    role = serializers.ChoiceField(choices=[User.DOCTOR], required=False)  # only doctors can sign up
+    role = serializers.ChoiceField(choices=SIGNUP_ROLES, required=False)  # only doctors can sign up
 
     def validate_password(self, value):
         validate_password(value)  # Django's rules: 8+ characters, not a common password

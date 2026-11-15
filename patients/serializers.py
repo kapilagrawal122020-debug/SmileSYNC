@@ -2,6 +2,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema_field
@@ -12,8 +13,11 @@ from accounts.validators import UPLOAD_VALIDATORS
 from clinic.models import Chair
 
 from . import billing
+from .teeth import clean_teeth
+from masterdata.models import ListValue
+from masterdata.services import active_codes
 from .models import (
-    Advance, AdvanceRefund, Feedback, Invoice, InvoiceItem, Patient, PatientImage, Payment, Treatment, Visit,
+    Advance, AdvanceRefund, Feedback, Invoice, InvoiceItem, MedicalHistory, Patient, PatientImage, Payment, Treatment, Visit,
 )
 
 
@@ -63,16 +67,69 @@ class PatientSerializer(ClinicScopedSerializer):
         return data
 
 
+ACTIVE_VISIT = [Visit.BOOKED, Visit.CONFIRMED, Visit.RESCHEDULE, Visit.IN_PROGRESS]
+
+
 class VisitSerializer(ClinicScopedSerializer):
     patient_name = serializers.CharField(source="patient.name", read_only=True)
+    end_at = serializers.SerializerMethodField()
 
     class Meta:
         model = Visit
         fields = [
-            "id", "patient", "patient_name", "doctor", "chair", "scheduled_at", "status", "notes",
+            "id", "patient", "patient_name", "doctor", "chair", "scheduled_at", "duration_minutes", "end_at",
+            "status", "cancel_reason", "notes",
         ]
 
+    @extend_schema_field(serializers.DateTimeField())
+    def get_end_at(self, obj):
+        return (obj.scheduled_at + timedelta(minutes=obj.duration_minutes)).isoformat()
+
+    def validate_duration_minutes(self, value):
+        if not 5 <= value <= 480:
+            raise serializers.ValidationError("Use a length between 5 and 480 minutes.")
+        return value
+
+    def validate_cancel_reason(self, value):
+        if value and value not in active_codes(ListValue, "cancellation-reasons", self.context["request"].user.clinic_id):
+            raise serializers.ValidationError("Choose one of the cancellation reasons.")
+        return value
+
+    def _no_overlap(self, attrs):
+        """A chair or a doctor cannot be in two active visits at once."""
+        get = lambda name, default=None: attrs.get(name, getattr(self.instance, name, default) if self.instance else default)
+        status, start, minutes = get("status", Visit.BOOKED), get("scheduled_at"), get("duration_minutes", 30)
+        if status not in ACTIVE_VISIT or start is None:
+            return
+        end = start + timedelta(minutes=minutes)
+        chair, doctor, patient = get("chair"), get("doctor"), get("patient")
+        who = Q()
+        if chair:
+            who |= Q(chair=chair)
+        if doctor:
+            who |= Q(doctor=doctor)
+        if not who:
+            return
+        near = Visit.objects.filter(who, status__in=ACTIVE_VISIT, scheduled_at__gt=start - timedelta(days=1), scheduled_at__lt=end)
+        if self.instance:
+            near = near.exclude(pk=self.instance.pk)
+        for other in near.select_related("patient"):
+            if other.scheduled_at + timedelta(minutes=other.duration_minutes) <= start:
+                continue  # it ends before this one starts (touching is fine)
+            field = "chair" if chair and other.chair_id == chair.id else "doctor"
+            span = f"{timezone.localtime(other.scheduled_at):%I:%M %p} to {timezone.localtime(other.scheduled_at + timedelta(minutes=other.duration_minutes)):%I:%M %p}"
+            raise serializers.ValidationError({field: f"Already booked {span} for {other.patient.name}. Choose another time or {field}."})
+
+    def update(self, instance, validated_data):
+        moved = "scheduled_at" in validated_data and validated_data["scheduled_at"] != instance.scheduled_at
+        instance = super().update(instance, validated_data)
+        if moved and instance.reminder_sent:  # a new time needs a new reminder
+            instance.reminder_sent = False
+            instance.save(update_fields=["reminder_sent"])
+        return instance
+
     def validate(self, attrs):
+        self._no_overlap(attrs)
         chair = attrs.get("chair") or (self.instance.chair if self.instance else None)
         starting = attrs.get("status") == Visit.IN_PROGRESS and (not self.instance or self.instance.status != Visit.IN_PROGRESS)
         if starting and chair and chair.status == Chair.LOCKED:
@@ -81,6 +138,9 @@ class VisitSerializer(ClinicScopedSerializer):
 
 
 class TreatmentSerializer(ClinicScopedSerializer):
+    def validate_tooth(self, value):
+        return clean_teeth(value)
+
     class Meta:
         model = Treatment
         fields = [
@@ -94,6 +154,9 @@ class TreatmentSerializer(ClinicScopedSerializer):
 class PatientImageSerializer(ClinicScopedSerializer):
     file = serializers.FileField(write_only=True, validators=UPLOAD_VALIDATORS)
     file_url = serializers.SerializerMethodField()
+
+    def validate_tooth(self, value):
+        return clean_teeth(value)
 
     class Meta:
         model = PatientImage

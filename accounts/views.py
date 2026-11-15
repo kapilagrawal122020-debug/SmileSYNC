@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+import audit.services as audit
 from messaging.whatsapp import send_template
 from patients.models import Patient
 
@@ -42,7 +43,9 @@ class LoginView(APIView):
         data.is_valid(raise_exception=True)
         user = authenticate(request, username=data.validated_data["phone"], password=data.validated_data["password"])
         if user is None:
+            audit.log("login.failed", request, label=data.validated_data["phone"])
             return Response({"detail": "Wrong phone number or password."}, status=401)
+        audit.log("login", request, user=user)
         return token_response(user)
 
 
@@ -60,6 +63,7 @@ class RegisterView(APIView):
         data.is_valid(raise_exception=True)
         with transaction.atomic():
             user = data.save()
+        audit.log("clinic.register", request, user=user, obj=user.clinic, clinic=user.clinic)
         response = token_response(user)
         response.status_code = 201
         return response
@@ -134,6 +138,7 @@ class OtpVerifyView(APIView):
         elif user.role != User.PATIENT:
             return Response({"detail": "Staff must log in with a password."}, status=400)
         Patient.objects.filter(phone=phone, user__isnull=True).update(user=user)
+        audit.log("login.patient", request, user=user)
         return token_response(user)
 
 

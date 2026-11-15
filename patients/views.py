@@ -12,12 +12,14 @@ from inventory.services import change_stock, deduct_for_treatment
 from inventory.models import StockMovement
 from messaging.services import alert_doctors
 
-from . import billing
+import audit.services as audit
+from . import billing, history
 from .models import Advance, AdvanceRefund, Feedback, Invoice, Patient, PatientImage, Payment, Treatment, Visit
 from .serializers import (
     AdvanceSerializer, ApplyAdvanceSerializer, BillingSummarySerializer, FeedbackSerializer, InvoiceSerializer, PatientImageSerializer,
     PatientSerializer, PaymentSerializer, RefundSerializer, TreatmentSerializer, VisitSerializer,
 )
+from .serializers_history import MedicalHistorySerializer
 
 
 BINARY = {(200, "application/octet-stream"): OpenApiTypes.BINARY}
@@ -50,6 +52,20 @@ class PatientViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
     def selfie(self, request, pk=None):
         return file_response(self.get_object().selfie)
 
+    @extend_schema(methods=["GET"], responses=MedicalHistorySerializer)
+    @extend_schema(methods=["POST"], request=MedicalHistorySerializer, responses={201: MedicalHistorySerializer})
+    @action(detail=True, methods=["get", "post"], url_path="history")
+    def medical_history(self, request, pk=None):
+        """GET the latest medical checklist with its alerts. POST a new review (earlier ones are kept)."""
+        patient = self.get_object()
+        if request.method == "GET":
+            return Response(history.latest(patient, request))
+        data = MedicalHistorySerializer(data=request.data, context={"request": request, "patient": patient})
+        data.is_valid(raise_exception=True)
+        data.save(patient=patient, reviewed_by=request.user)
+        audit.log("history.save", request, obj=patient, clinic=patient.clinic)
+        return Response(history.latest(patient, request), status=201)
+
     @extend_schema(responses=BillingSummarySerializer)
     @action(detail=True)
     def billing(self, request, pk=None):
@@ -67,6 +83,22 @@ class VisitViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
     read_roles = ALL
     write_roles = STAFF
     filter_params = {"date": "scheduled_at__date", "patient": "patient", "status": "status", "doctor": "doctor"}
+
+    @extend_schema(request=inline_serializer("RescheduleBody", {"scheduled_at": serializers.DateTimeField(), "duration_minutes": serializers.IntegerField(required=False)}), responses=VisitSerializer)
+    @action(detail=True, methods=["post"])
+    def reschedule(self, request, pk=None):
+        """Move a visit to a new time. It goes back to Booked and gets a fresh reminder. Overlaps are refused."""
+        visit = self.get_object()
+        if visit.status in (Visit.COMPLETED, Visit.IN_PROGRESS, Visit.CANCELLED):
+            raise serializers.ValidationError({"status": "A visit that is in progress, completed or cancelled cannot be moved. Book a new one."})
+        data = {"scheduled_at": request.data.get("scheduled_at"), "status": Visit.BOOKED}
+        if request.data.get("duration_minutes"):
+            data["duration_minutes"] = request.data["duration_minutes"]
+        s = self.get_serializer(visit, data=data, partial=True)
+        s.is_valid(raise_exception=True)
+        s.save()
+        audit.log("visit.reschedule", request, obj=visit, clinic=visit.patient.clinic)
+        return Response(self.get_serializer(self.get_object()).data)
 
 
 class TreatmentViewSet(ClinicScopedMixin, viewsets.ModelViewSet):

@@ -87,6 +87,9 @@ INSTALLED_APPS = [
     "inventory",
     "hygiene",
     "messaging",
+    "masterdata",
+    "audit",
+    "platform_admin",
 ]
 
 MIDDLEWARE = [
@@ -170,6 +173,11 @@ SPECTACULAR_SETTINGS = {
     "ENUM_NAME_OVERRIDES": {  # payments and advances both have a "method" field
         "PaymentMethodEnum": "patients.models.Payment.METHOD_CHOICES",
         "AdvanceMethodEnum": "patients.models.Advance.METHOD_CHOICES",
+        "ListKindEnum": "masterdata.models.ListDefinition.KIND_CHOICES",
+        "ImageKindEnum": "patients.models.PatientImage.KIND_CHOICES",
+        "MessageKindEnum": "messaging.models.Message.KIND_CHOICES",
+        "UserRoleEnum": "accounts.models.User.ROLE_CHOICES",
+        "SignupRoleEnum": "accounts.serializers.SIGNUP_ROLES",
     },
     "COMPONENT_SPLIT_REQUEST": True,  # separate request schemas so file uploads show as multipart
     "SWAGGER_UI_SETTINGS": {"persistAuthorization": True, "displayRequestDuration": True},

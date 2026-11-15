@@ -66,6 +66,8 @@ class Visit(models.Model):
     chair = models.ForeignKey(Chair, null=True, blank=True, on_delete=models.SET_NULL, related_name="visits")
     scheduled_at = models.DateTimeField()
     status = models.CharField(max_length=15, choices=STATUS_CHOICES, default=BOOKED)
+    duration_minutes = models.PositiveSmallIntegerField(default=30)  # for the overlap check and the day view
+    cancel_reason = models.CharField(max_length=60, blank=True)  # code from the cancellation-reasons list
     notes = models.TextField(blank=True)
     reminder_sent = models.BooleanField(default=False)
     feedback_requested = models.BooleanField(default=False)
@@ -82,6 +84,25 @@ class Visit(models.Model):
 
     def __str__(self):
         return f"{self.patient.name} on {self.scheduled_at:%d %b %H:%M}"
+
+
+class MedicalHistory(models.Model):
+    """The patient's medical checklist. Every review saves a new row, so earlier answers are kept.
+
+    The lists hold codes from the master lists medical-conditions, allergies, flagged-medications and habits.
+    """
+
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="history_versions")
+    conditions = models.JSONField(default=list, blank=True)
+    allergies = models.JSONField(default=list, blank=True)
+    medicines = models.JSONField(default=list, blank=True)
+    habits = models.JSONField(default=list, blank=True)
+    notes = models.TextField(blank=True)
+    reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
 
 
 class Treatment(models.Model):

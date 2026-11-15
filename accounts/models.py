@@ -19,7 +19,7 @@ class UserManager(BaseUserManager):
     def create_superuser(self, phone, password, **extra):
         extra.setdefault("is_staff", True)
         extra.setdefault("is_superuser", True)
-        extra.setdefault("role", User.DOCTOR)
+        extra.setdefault("role", User.SUPER_ADMIN)
         return self.create_user(phone, password, **extra)
 
 
@@ -27,11 +27,13 @@ class User(AbstractBaseUser, PermissionsMixin):
     """Staff (doctor, consultant, assistant) and patients. The phone number is the login."""
 
     DOCTOR, CONSULTANT, ASSISTANT, PATIENT = "doctor", "consultant", "assistant", "patient"
+    SUPER_ADMIN = "super_admin"  # platform owner: manages lists, clinics and accounts, never clinical data
     ROLE_CHOICES = [
         (DOCTOR, "Doctor / owner"),
         (CONSULTANT, "Consultant"),
         (ASSISTANT, "Assistant"),
         (PATIENT, "Patient"),
+        (SUPER_ADMIN, "Platform admin"),
     ]
 
     phone = models.CharField(max_length=10, unique=True, validators=[phone_validator])
@@ -51,6 +53,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     USERNAME_FIELD = "phone"
     REQUIRED_FIELDS = ["name"]
     objects = UserManager()
+
+    @property
+    def is_platform_admin(self):
+        return self.is_superuser and self.is_active
 
     def __str__(self):
         return f"{self.name or self.phone} ({self.role})"

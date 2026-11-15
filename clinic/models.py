@@ -1,6 +1,7 @@
 from datetime import date
 
 from django.db import models
+from django.utils import timezone
 
 from accounts.validators import UPLOAD_VALIDATORS
 
@@ -14,6 +15,7 @@ class Clinic(models.Model):
     google_review_url = models.URLField(blank=True)
     website_url = models.URLField(blank=True)
     social_url = models.URLField(blank=True)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
 
     def __str__(self):
         return self.name

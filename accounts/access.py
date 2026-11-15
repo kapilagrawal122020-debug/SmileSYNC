@@ -21,6 +21,16 @@ STAFF = {"doctor", "consultant", "assistant"}
 ALL = STAFF | {"patient"}
 
 
+class IsSuperAdmin(BasePermission):
+    """Platform admin only. Used for every /api/platform/ route, so one rule guards the whole dashboard."""
+
+    message = "Only the platform admin can do this."
+
+    def has_permission(self, request, view):
+        user = request.user
+        return bool(user and user.is_authenticated and user.is_platform_admin)
+
+
 class RolePermission(BasePermission):
     """A view declares `read_roles` and `write_roles`.
 

@@ -48,13 +48,16 @@ SIGNUP_ROLES = [User.DOCTOR]  # sign-up creates doctors only
 
 
 class RegisterSerializer(serializers.Serializer):
-    """Self sign-up: a doctor creates their clinic and their own login in one step."""
+    """Self sign-up: a doctor picks their clinic from the directory the platform admin keeps.
+    The account stays switched off until it is approved, so nobody can reach a clinic's patients just by choosing it."""
 
     name = serializers.CharField(max_length=100)
     phone = PhoneField(validators=[UniqueValidator(queryset=User.objects.all(), message="Phone already in use.")])
     password = serializers.CharField(write_only=True)
-    clinic_name = serializers.CharField(max_length=150)
-    city = serializers.CharField(max_length=80, required=False, allow_blank=True)
+    clinic = serializers.PrimaryKeyRelatedField(
+        queryset=Clinic.objects.filter(is_active=True),
+        error_messages={"does_not_exist": "Choose your clinic from the list.", "incorrect_type": "Choose your clinic from the list.", "required": "Choose your clinic from the list."},
+    )
     designation = serializers.CharField(max_length=100, required=False, allow_blank=True)
     speciality = serializers.CharField(max_length=100, required=False, allow_blank=True)
     registration_number = serializers.CharField(max_length=50, required=False, allow_blank=True)
@@ -66,10 +69,20 @@ class RegisterSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         validated_data.pop("role", None)
-        clinic = Clinic.objects.create(
-            name=validated_data.pop("clinic_name"), city=validated_data.pop("city", "")
-        )
-        return User.objects.create_user(role=User.DOCTOR, clinic=clinic, **validated_data)
+        return User.objects.create_user(role=User.DOCTOR, is_active=False, signup_pending=True, **validated_data)
+
+
+class PublicClinicSerializer(serializers.ModelSerializer):
+    """What the sign-up screen may show without a login: the name and the place, nothing about the people."""
+
+    class Meta:
+        model = Clinic
+        fields = ["id", "name", "city", "state"]
+
+
+class PendingSignupSerializer(serializers.Serializer):
+    detail = serializers.CharField()
+    pending = serializers.BooleanField()
 
 
 class TokenResponseSerializer(serializers.Serializer):

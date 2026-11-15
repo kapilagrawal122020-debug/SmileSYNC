@@ -3,6 +3,7 @@ import tempfile
 from datetime import timedelta
 from decimal import Decimal
 
+from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from django.utils import timezone
@@ -36,6 +37,9 @@ class SmileSyncTests(APITestCase):
         )
         cls.chair = Chair.objects.create(clinic=cls.clinic, name="Chair 1")
 
+    def setUp(self):
+        cache.clear()  # rate limits (login, sign-up) are counted per test
+
     def login(self, user):
         self.client.force_authenticate(user)
 
@@ -47,28 +51,37 @@ class SmileSyncTests(APITestCase):
         bad = self.client.post("/api/auth/login/", {"phone": "9000000001", "password": "wrong"})
         self.assertEqual(bad.status_code, 401)
 
-    def test_doctor_self_signup_creates_clinic_and_logs_in(self):
+    def test_doctor_signup_picks_a_listed_clinic_and_waits_for_approval(self):
         body = {
             "role": "doctor", "name": "Kapil Agrawal", "phone": "8979772850", "password": "Kap@123il",
-            "clinic_name": "Kapil Clinic", "city": "Kotdwara", "designation": "BDS",
-            "speciality": "Ortho", "registration_number": "13935",
+            "clinic": self.clinic.id, "designation": "BDS", "speciality": "Ortho", "registration_number": "13935",
         }
         r = self.client.post("/api/auth/register/", body, format="json")
         self.assertEqual(r.status_code, 201, r.data)
-        self.assertEqual(r.data["user"]["role"], "doctor")
+        self.assertTrue(r.data["pending"])
+        self.assertNotIn("token", r.data)  # no access until approved
         user = User.objects.get(phone="8979772850")
-        self.assertEqual(user.clinic.name, "Kapil Clinic")
+        self.assertEqual(user.clinic, self.clinic)
+        self.assertFalse(user.is_active)
         self.assertNotEqual(user.password, "Kap@123il")  # stored hashed
-        self.client.credentials(HTTP_AUTHORIZATION="Token " + r.data["token"])
-        self.assertEqual(self.client.get("/api/auth/me/").data["phone"], "8979772850")
-        self.assertEqual(self.client.get("/api/dashboard/").status_code, 200)
+        # the right password gets a clear message, a wrong one does not reveal that the account exists
+        waiting = self.client.post("/api/auth/login/", {"phone": "8979772850", "password": "Kap@123il"})
+        self.assertEqual(waiting.status_code, 403)
+        self.assertIn("waiting for approval", waiting.data["detail"])
+        self.assertEqual(self.client.post("/api/auth/login/", {"phone": "8979772850", "password": "nope"}).status_code, 401)
 
-    def test_signup_rejects_duplicates_weak_passwords_and_other_roles(self):
-        ok = {"name": "A", "phone": "8000000001", "password": "Str0ng!pass", "clinic_name": "C"}
-        self.assertEqual(self.client.post("/api/auth/register/", {**ok, "phone": "9000000001"}, format="json").status_code, 400)  # phone taken
-        self.assertEqual(self.client.post("/api/auth/register/", {**ok, "password": "12345"}, format="json").status_code, 400)
-        self.assertEqual(self.client.post("/api/auth/register/", {**ok, "role": "assistant"}, format="json").status_code, 400)
-        self.assertEqual(Clinic.objects.filter(name="C").count(), 0)  # nothing half-created
+    def test_signup_rejects_unknown_clinics_duplicates_weak_passwords_and_other_roles(self):
+        ok = {"name": "A", "phone": "8000000001", "password": "Str0ng!pass", "clinic": self.clinic.id}
+        post = lambda **kw: self.client.post("/api/auth/register/", {**ok, **kw}, format="json").status_code
+        self.assertEqual(post(phone="9000000001"), 400)  # phone taken
+        self.assertEqual(post(password="12345"), 400)
+        self.assertEqual(post(role="assistant"), 400)
+        self.assertEqual(post(clinic=99999), 400)  # not in the directory
+        self.assertEqual(post(clinic=""), 400)
+        body = {k: v for k, v in ok.items() if k != "clinic"}
+        self.assertEqual(self.client.post("/api/auth/register/", {**body, "clinic_name": "Brand New Clinic"}, format="json").status_code, 400)  # typing a name no longer creates a clinic
+        self.assertFalse(Clinic.objects.filter(name="Brand New Clinic").exists())
+        self.assertFalse(User.objects.filter(phone="8000000001").exists())  # nothing half-created
 
     def test_patient_otp_login_sees_only_own_data(self):
         r = self.client.post("/api/auth/otp/request/", {"phone": "9111111111"})

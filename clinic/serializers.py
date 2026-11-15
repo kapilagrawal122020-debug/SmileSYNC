@@ -19,6 +19,8 @@ class ClinicSerializer(serializers.ModelSerializer):
             "id", "name", "address", "city", "phone",
             "google_review_url", "website_url", "social_url", "doctors",
         ]
+        # The name belongs to the platform directory. The point of contact and admin notes are not exposed here at all.
+        read_only_fields = ["name"]
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_doctors(self, clinic):

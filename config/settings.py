@@ -158,7 +158,7 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 50,
     "DEFAULT_SCHEMA_CLASS": "config.schema.SmileSchema",
-    "DEFAULT_THROTTLE_RATES": {"login": "10/min", "otp": "5/min", "register": "10/hour"},
+    "DEFAULT_THROTTLE_RATES": {"login": "10/min", "otp": "5/min", "register": "10/hour", "clinic_list": "60/min"},
 }
 
 # Swagger UI is at /api/docs/ and the raw OpenAPI schema at /api/schema/

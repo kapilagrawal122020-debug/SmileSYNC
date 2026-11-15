@@ -1,4 +1,5 @@
 """The platform admin dashboard: who can reach it, and what it can do."""
+from django.core.cache import cache
 from django.core.management import call_command
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
@@ -61,7 +62,7 @@ class PlatformAdminTests(APITestCase):
         self.assertFalse(User.objects.get(pk=self.assistant.id).is_superuser)
         # sign-up creates doctors only
         self.client.force_authenticate(None)
-        r = self.client.post("/api/auth/register/", {"name": "A", "phone": "8000000001", "password": "Str0ng!pass", "clinic_name": "C", "role": "super_admin"}, format="json")
+        r = self.client.post("/api/auth/register/", {"name": "A", "phone": "8000000001", "password": "Str0ng!pass", "clinic": self.clinic.id, "role": "super_admin"}, format="json")
         self.assertEqual(r.status_code, 400)
 
     def test_super_admin_flag_in_the_signed_in_user_and_command_line_creation(self):
@@ -241,3 +242,120 @@ class PlatformAdminTests(APITestCase):
         r = self.client.get("/api/platform/audit/?action=list.")
         self.assertEqual([e["action"] for e in r.data["results"]], ["list.value.update"])
         self.assertEqual(r.data["results"][0]["detail"]["code"], "instagram")
+
+
+class ClinicDirectoryTests(APITestCase):
+    """The platform admin keeps the clinic directory. Doctors choose from it at sign-up and wait for approval."""
+
+    NEW = {
+        "name": "Bright Smiles", "city": "Jaipur", "state": "Rajasthan", "pincode": "302001", "address": "12 MI Road",
+        "phone": "01412345678", "email": "hello@bright.example", "poc_name": "Dr Meena Rao", "poc_designation": "Owner",
+        "poc_phone": "9812345678", "poc_email": "meena@bright.example", "registration_number": "RJ-123", "admin_notes": "Met at the Jaipur expo",
+    }
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.admin = User.objects.create_superuser("9000000099", "Adm1n!pass", name="Root")
+        cls.clinic = Clinic.objects.create(name="Smile Care", city="Pune", poc_name="Dr A", poc_phone="9000000010", admin_notes="secret note")
+        cls.hidden = Clinic.objects.create(name="Closed Clinic", city="Delhi", is_active=False)
+        cls.doctor = User.objects.create_user("9000000001", "pw12345!", name="Dr A", role="doctor", clinic=cls.clinic)
+
+    def setUp(self):
+        cache.clear()
+
+    def test_admin_adds_a_clinic_with_all_details(self):
+        self.client.force_authenticate(self.admin)
+        r = self.client.post("/api/platform/clinics/", self.NEW, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        clinic = Clinic.objects.get(pk=r.data["id"])
+        self.assertEqual((clinic.poc_name, clinic.poc_phone, clinic.state, clinic.pincode), ("Dr Meena Rao", "9812345678", "Rajasthan", "302001"))
+        self.assertTrue(clinic.is_active)
+        self.assertTrue(AuditEvent.objects.filter(action="clinic.create", object_id=str(clinic.id)).exists())
+
+    def test_a_clinic_needs_a_name_city_and_a_point_of_contact(self):
+        self.client.force_authenticate(self.admin)
+        for field in ("name", "city", "poc_name", "poc_phone"):
+            body = {k: v for k, v in self.NEW.items() if k != field}
+            r = self.client.post("/api/platform/clinics/", body, format="json")
+            self.assertEqual(r.status_code, 400, field)
+            self.assertIn(field, r.data)
+        self.assertEqual(self.client.post("/api/platform/clinics/", {**self.NEW, "poc_phone": "12345"}, format="json").status_code, 400)
+        self.assertEqual(self.client.post("/api/platform/clinics/", {**self.NEW, "pincode": "12ab"}, format="json").status_code, 400)
+        dup = self.client.post("/api/platform/clinics/", {**self.NEW, "name": "smile care", "city": "PUNE"}, format="json")
+        self.assertEqual(dup.status_code, 400)
+        self.assertIn("already exists", str(dup.data["name"]))
+
+    def test_only_the_platform_admin_can_manage_the_directory(self):
+        for who in (self.doctor, None):
+            self.client.force_authenticate(who)
+            self.assertIn(self.client.post("/api/platform/clinics/", self.NEW, format="json").status_code, (401, 403))
+            self.assertIn(self.client.patch(f"/api/platform/clinics/{self.clinic.id}/", {"is_active": False}, format="json").status_code, (401, 403))
+        self.assertFalse(Clinic.objects.filter(name="Bright Smiles").exists())
+        self.assertTrue(Clinic.objects.get(pk=self.clinic.id).is_active)
+
+    def test_clinics_cannot_be_deleted_only_turned_off(self):
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(self.client.delete(f"/api/platform/clinics/{self.clinic.id}/").status_code, 405)
+        r = self.client.patch(f"/api/platform/clinics/{self.clinic.id}/", {"is_active": False}, format="json")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.client.get("/api/platform/clinics/?active=false").data["count"], 2)
+
+    def test_sign_up_list_is_public_active_only_and_shows_no_contact_details(self):
+        self.client.force_authenticate(None)
+        r = self.client.get("/api/auth/clinics/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual([c["name"] for c in r.data], ["Smile Care"])  # the turned-off clinic is hidden
+        self.assertEqual(set(r.data[0]), {"id", "name", "city", "state"})
+        self.assertNotIn("secret note", str(r.data))
+        self.assertEqual(len(self.client.get("/api/auth/clinics/?search=pune").data), 1)
+        self.assertEqual(len(self.client.get("/api/auth/clinics/?search=zzz").data), 0)
+
+    def test_staff_never_see_the_point_of_contact_or_admin_notes(self):
+        self.client.force_authenticate(self.doctor)
+        r = self.client.get("/api/clinics/")
+        text = str(r.data)
+        self.assertNotIn("secret note", text)
+        self.assertNotIn("poc_", text)
+        self.assertNotIn("9000000010", text)
+        # the name belongs to the directory, so a doctor cannot rename the clinic
+        self.client.patch(f"/api/clinics/{self.clinic.id}/", {"name": "Renamed", "city": "Mumbai"}, format="json")
+        self.clinic.refresh_from_db()
+        self.assertEqual(self.clinic.name, "Smile Care")
+
+    def test_signup_then_approval_by_the_platform_admin(self):
+        self.client.force_authenticate(None)
+        body = {"name": "Dr New", "phone": "8000000005", "password": "Str0ng!pass", "clinic": self.clinic.id}
+        self.assertEqual(self.client.post("/api/auth/register/", body, format="json").status_code, 201)
+        new = User.objects.get(phone="8000000005")
+        self.assertTrue(AuditEvent.objects.filter(action="signup.request", object_id=str(new.id)).exists())
+        # a clinic that is turned off cannot be chosen
+        self.assertEqual(self.client.post("/api/auth/register/", {**body, "phone": "8000000006", "clinic": self.hidden.id}, format="json").status_code, 400)
+
+        # a doctor cannot use the platform admin's approve button
+        self.client.force_authenticate(self.doctor)
+        self.assertEqual(self.client.post(f"/api/platform/users/{new.id}/approve/").status_code, 403)
+
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(self.client.get("/api/platform/overview/").data["pending_signups"], 1)
+        pending = self.client.get("/api/platform/users/?pending=true")
+        self.assertEqual([u["phone"] for u in pending.data["results"]], ["8000000005"])
+        self.assertTrue(pending.data["results"][0]["signup_pending"])
+        counts = {c["name"]: c["pending_count"] for c in self.client.get("/api/platform/clinics/").data["results"]}
+        self.assertEqual(counts["Smile Care"], 1)
+        self.assertEqual(self.client.post(f"/api/platform/users/{new.id}/approve/").status_code, 200)
+        self.assertEqual(self.client.post(f"/api/platform/users/{new.id}/approve/").status_code, 400)  # already done
+        self.assertTrue(AuditEvent.objects.filter(action="user.approve", object_id=str(new.id)).exists())
+
+        self.client.force_authenticate(None)
+        login = self.client.post("/api/auth/login/", {"phone": "8000000005", "password": "Str0ng!pass"})
+        self.assertEqual(login.status_code, 200)
+        self.client.credentials(HTTP_AUTHORIZATION="Token " + login.data["token"])
+        self.assertEqual(self.client.get("/api/dashboard/").status_code, 200)
+
+    def test_a_switched_off_account_is_not_shown_as_waiting(self):
+        """Turning someone off deliberately must not look like a pending sign-up, and cannot be approved as one."""
+        self.client.force_authenticate(self.admin)
+        self.client.patch(f"/api/platform/users/{self.doctor.id}/", {"is_active": False}, format="json")
+        r = self.client.get(f"/api/platform/users/{self.doctor.id}/")
+        self.assertFalse(r.data["signup_pending"])
+        self.assertEqual(self.client.post(f"/api/platform/users/{self.doctor.id}/approve/").status_code, 400)

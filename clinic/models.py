@@ -7,15 +7,34 @@ from accounts.validators import UPLOAD_VALIDATORS
 
 
 class Clinic(models.Model):
+    """One row per clinic. The platform admin keeps this directory; doctors pick their clinic from it when they sign up."""
+
     name = models.CharField(max_length=150)
     address = models.TextField(blank=True)
     city = models.CharField(max_length=80, blank=True)
+    state = models.CharField(max_length=80, blank=True)
+    pincode = models.CharField(max_length=6, blank=True)
+    location_url = models.URLField(blank=True)  # Google Maps link
     phone = models.CharField(max_length=15, blank=True)
+    email = models.EmailField(blank=True)
+    registration_number = models.CharField(max_length=80, blank=True)  # clinic registration under the state Act
+    gst_number = models.CharField(max_length=20, blank=True)
+    # Point of contact at the clinic: who the platform team calls
+    poc_name = models.CharField("point of contact", max_length=100, blank=True)
+    poc_designation = models.CharField(max_length=80, blank=True)
+    poc_phone = models.CharField(max_length=15, blank=True)
+    poc_email = models.EmailField(blank=True)
+    admin_notes = models.TextField(blank=True)  # internal, never shown to the clinic
+    # A turned-off clinic is hidden from sign-up. Its existing staff keep working.
+    is_active = models.BooleanField(default=True)
     # One-tap links shown after a visit
     google_review_url = models.URLField(blank=True)
     website_url = models.URLField(blank=True)
     social_url = models.URLField(blank=True)
     created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        ordering = ["name"]
 
     def __str__(self):
         return self.name

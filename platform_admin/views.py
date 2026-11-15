@@ -31,7 +31,7 @@ class OverviewView(APIView):
 
     @extend_schema(responses=inline_serializer("PlatformOverview", {
         "clinics": serializers.IntegerField(), "patients": serializers.IntegerField(), "visits_30_days": serializers.IntegerField(),
-        "staff_by_role": serializers.DictField(), "super_admins": serializers.IntegerField(),
+        "staff_by_role": serializers.DictField(), "super_admins": serializers.IntegerField(), "pending_signups": serializers.IntegerField(),
         "lists": serializers.DictField(), "audit_events_7_days": serializers.IntegerField(),
         "recent_clinics": serializers.ListField(child=serializers.DictField()),
     }))
@@ -45,23 +45,43 @@ class OverviewView(APIView):
             "visits_30_days": Visit.objects.filter(scheduled_at__gte=now - timedelta(days=30)).count(),
             "staff_by_role": roles,
             "super_admins": User.objects.filter(is_superuser=True, is_active=True).count(),
+            "pending_signups": User.objects.filter(signup_pending=True, is_active=False).count(),
             "lists": {"count": ListDefinition.objects.count(), "values": ListValue.objects.filter(clinic__isnull=True).count()},
             "audit_events_7_days": AuditEvent.objects.filter(created_at__gte=now - timedelta(days=7)).count(),
             "recent_clinics": [{"id": c.id, "name": c.name, "city": c.city, "created_at": c.created_at, "staff_count": c.staff_count, "patient_count": c.patient_count} for c in recent],
         })
 
 
-class ClinicViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
-    """All clinics with their sizes. The admin can correct a clinic's name, city, address and phone."""
+class ClinicViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
+    """The clinic directory. Add a clinic with its point of contact and location, edit it, or turn it off.
+    Doctors choose their clinic from the active ones at sign-up. Clinics are never deleted, because patients and bills belong to them."""
 
     permission_classes = [IsSuperAdmin]
     serializer_class = PlatformClinicSerializer
-    http_method_names = ["get", "patch", "head", "options"]
+    http_method_names = ["get", "post", "patch", "head", "options"]
+
+    @extend_schema(parameters=[OpenApiParameter("search", str, description="Name, city or contact person"), OpenApiParameter("active", bool)])
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
 
     def get_queryset(self):
-        qs = Clinic.objects.annotate(staff_count=Count("staff", distinct=True), patient_count=Count("patients", distinct=True)).order_by("-created_at", "-id")
-        q = self.request.query_params.get("search")
-        return qs.filter(Q(name__icontains=q) | Q(city__icontains=q)) if q else qs
+        waiting = Q(staff__signup_pending=True, staff__is_active=False)
+        qs = Clinic.objects.annotate(
+            staff_count=Count("staff", distinct=True), patient_count=Count("patients", distinct=True),
+            pending_count=Count("staff", filter=waiting, distinct=True),
+        ).order_by("-created_at", "-id")
+        p = self.request.query_params
+        if p.get("search"):
+            qs = qs.filter(Q(name__icontains=p["search"]) | Q(city__icontains=p["search"]) | Q(poc_name__icontains=p["search"]))
+        if p.get("active") in ("true", "1"):
+            qs = qs.filter(is_active=True)
+        if p.get("active") in ("false", "0"):
+            qs = qs.filter(is_active=False)
+        return qs
+
+    def perform_create(self, serializer):
+        clinic = serializer.save()
+        audit.log("clinic.create", self.request, obj=clinic, clinic=clinic, name=clinic.name)
 
     def perform_update(self, serializer):
         clinic = serializer.save()
@@ -77,6 +97,7 @@ class UserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Updat
 
     @extend_schema(parameters=[
         OpenApiParameter("role", str), OpenApiParameter("clinic", int), OpenApiParameter("search", str), OpenApiParameter("active", bool),
+        OpenApiParameter("pending", bool, description="Only sign-ups waiting for approval"),
     ])
     def list(self, request, *args, **kwargs):
         return super().list(request, *args, **kwargs)
@@ -94,6 +115,8 @@ class UserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Updat
             qs = qs.filter(is_active=False)
         if p.get("search"):
             qs = qs.filter(Q(name__icontains=p["search"]) | Q(phone__icontains=p["search"]))
+        if p.get("pending") in ("true", "1"):
+            qs = qs.filter(signup_pending=True, is_active=False)
         return qs
 
     def perform_update(self, serializer):
@@ -107,6 +130,20 @@ class UserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Updat
         if not user.is_active:
             Token.objects.filter(user=user).delete()  # signs them out everywhere
         audit.log("user.update", self.request, obj=user, clinic=user.clinic, fields=sorted(serializer.validated_data), active=user.is_active)
+
+    @extend_schema(request=None, responses=PlatformUserSerializer)
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        """Switch on a doctor who signed up for a clinic. They can log in from now on."""
+        user = self.get_object()
+        if not (user.signup_pending and not user.is_active):
+            raise ValidationError({"detail": "This account is not waiting for approval."})
+        if user.clinic_id and not user.clinic.is_active:
+            raise ValidationError({"detail": "This clinic is turned off. Turn it on first."})
+        user.is_active, user.signup_pending = True, False
+        user.save(update_fields=["is_active", "signup_pending"])
+        audit.log("user.approve", request, obj=user, clinic=user.clinic)
+        return Response(PlatformUserSerializer(user).data)
 
     @extend_schema(request=SetPasswordSerializer, responses=inline_serializer("PasswordSet", {"detail": serializers.CharField()}))
     @action(detail=True, methods=["post"], url_path="set-password")

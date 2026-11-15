@@ -18,10 +18,14 @@ python manage.py test             # 16 tests covering the flows in the brief
 Demo logins (after `seed_demo`): doctor `9000000001` / `doctor123`, assistant `9000000002` / `assist123`,
 patient `9111111111` (OTP, shown in the response while `DEBUG=1`).
 
-Onboard a real clinic: a doctor signs up with `POST /api/auth/register/` (name, phone, password, clinic_name, optional city,
-designation, speciality, registration_number). That creates the clinic and the doctor and returns a token.
-The doctor then creates assistants and consultants through `POST /api/users/`.
-(Alternative: `createsuperuser`, then add a Clinic and a doctor user in `/admin/`.)
+Onboard a real clinic:
+1. The platform admin adds the clinic in the dashboard (Clinics, or `POST /api/platform/clinics/`) with its location and point of contact.
+2. The doctor signs up with `POST /api/auth/register/` (name, phone, password, `clinic` = the id of a listed clinic, optional
+   designation, speciality, registration_number). The list to choose from is `GET /api/auth/clinics/` (public: name and place only).
+   Typing a new clinic name is not possible. The account is created switched off and no token is returned.
+3. The platform admin checks the clinic with its contact person and approves the doctor (Accounts, or
+   `POST /api/platform/users/{id}/approve/`). Until then login answers 403 "waiting for approval" (only after the right password).
+4. The doctor then creates assistants and consultants through `POST /api/users/`.
 
 ## Try the API in Swagger
 
@@ -122,7 +126,14 @@ assistants and patients get 403. The web app shows the **Admin** menu only to th
   the dashboard (`POST /api/platform/admins/`).
 * **A platform admin cannot read clinic data.** Patients, visits, treatments and invoices return 403 for this role; the overview
   shows counts only.
-* `GET /api/platform/overview/`, `clinics/` (list, edit name, city, address, phone), `users/` (filter, turn on or off, `set-password`),
+* **Clinic directory** (`/api/platform/clinics/`, list, add, edit, `?search=`, `?active=`): name, city and a point of contact
+  (name and mobile) are required; state, pincode, address, map link, phone, email, registration and GST numbers, the contact's role
+  and email, and internal notes are optional. The same name in the same city is refused. Clinics are never deleted, only turned off
+  (`is_active`): a turned-off clinic disappears from the sign-up list and its existing staff keep working. The point of contact and
+  internal notes are never returned by the clinic-facing `/api/clinics/`, and a clinic's name can only be changed here.
+* **Sign-up approval**: `GET /api/platform/users/?pending=true` lists doctors waiting for approval, and the overview counts them.
+  Anyone who can see a clinic's patients should be someone the platform team has verified, which is why picking a clinic is not enough.
+* `GET /api/platform/overview/`, `clinics/`, `users/` (filter, turn on or off, `set-password`),
   `audit/` (filter, search, paged), and the lists below.
 * **Master lists**: `GET /api/platform/lists/`, `GET /api/platform/lists/{key}/`, `POST .../{key}/values/`, `PATCH /api/platform/list-values/{id}/`,
   `POST .../{key}/reorder/`, `GET .../{key}/export/?type=csv` (JSON by default), `POST /api/platform/lists/import/?dry_run=1`.

@@ -48,6 +48,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     registration_number = models.CharField(max_length=50, blank=True)
 
     is_active = models.BooleanField(default=True)
+    # A doctor who signed up for a clinic waits here until the platform admin approves the account.
+    signup_pending = models.BooleanField(default=False)
     is_staff = models.BooleanField(default=False)  # can open /admin
 
     USERNAME_FIELD = "phone"

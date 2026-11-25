@@ -32,6 +32,9 @@ router.register("inventory/movements", inventory.StockMovementViewSet, "stockmov
 router.register("hygiene/checks", hygiene.HygieneCheckViewSet, "hygiene")
 router.register("messages", messaging.MessageViewSet, "message")
 
+# The marketplace: open to everyone, no login
+router.register("public/clinics", clinic.PublicClinicViewSet, "public-clinic")
+
 # Platform admin only (every view uses IsSuperAdmin)
 router.register("platform/lists", masterdata.ListViewSet, "platform-list")
 router.register("platform/list-values", masterdata.ListValueViewSet, "platform-listvalue")
@@ -43,7 +46,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/auth/login/", accounts.LoginView.as_view()),
     path("api/auth/register/", accounts.RegisterView.as_view()),
-    path("api/auth/clinics/", accounts.ClinicChoicesView.as_view()),
+    path("api/auth/clinics/", clinic.PublicClinicViewSet.as_view({"get": "list"})),  # same list as the marketplace, kept for older apps
     path("api/auth/logout/", accounts.LogoutView.as_view()),
     path("api/auth/me/", accounts.MeView.as_view()),
     path("api/auth/otp/request/", accounts.OtpRequestView.as_view()),

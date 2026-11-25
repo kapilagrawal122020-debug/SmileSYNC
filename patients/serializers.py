@@ -8,7 +8,7 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
-from accounts.access import ClinicScopedSerializer, PhoneField, file_url
+from accounts.access import REVIEWERS, ClinicScopedSerializer, PhoneField, file_url
 from accounts.validators import UPLOAD_VALIDATORS
 from clinic.models import Chair
 
@@ -52,8 +52,8 @@ class PatientSerializer(ClinicScopedSerializer):
         user = self.context["request"].user
         if self.instance is None and not attrs.get("consent_data"):
             raise serializers.ValidationError({"consent_data": "Patient consent is required to register."})
-        if user.role != "doctor":
-            attrs.pop("private_notes", None)  # only the doctor writes private notes
+        if user.role not in REVIEWERS:
+            attrs.pop("private_notes", None)  # only the doctor and the clinic admin write private notes
         return super().validate(attrs)
 
     def create(self, validated_data):
@@ -62,7 +62,7 @@ class PatientSerializer(ClinicScopedSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        if self.context["request"].user.role != "doctor":
+        if self.context["request"].user.role not in REVIEWERS:
             data.pop("private_notes", None)
         return data
 

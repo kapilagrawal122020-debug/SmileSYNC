@@ -2,6 +2,7 @@ from datetime import date
 
 from django.db import models
 from django.utils import timezone
+from django.utils.text import slugify
 
 from accounts.validators import UPLOAD_VALIDATORS
 
@@ -25,6 +26,10 @@ class Clinic(models.Model):
     poc_phone = models.CharField(max_length=15, blank=True)
     poc_email = models.EmailField(blank=True)
     admin_notes = models.TextField(blank=True)  # internal, never shown to the clinic
+    # The public profile on the marketplace website
+    slug = models.SlugField(max_length=170, unique=True, blank=True)
+    about = models.TextField(blank=True)
+    timings = models.CharField(max_length=200, blank=True)  # e.g. "Mon to Sat, 10 am to 7 pm"
     # A turned-off clinic is hidden from sign-up. Its existing staff keep working.
     is_active = models.BooleanField(default=True)
     # One-tap links shown after a visit
@@ -35,6 +40,21 @@ class Clinic(models.Model):
 
     class Meta:
         ordering = ["name"]
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = self.make_slug(self.name, self.city, self.pk)
+        super().save(*args, **kwargs)
+
+    @staticmethod
+    def make_slug(name, city="", pk=None):
+        """smile-care-pune, then smile-care-pune-2 if that is taken. Used in the public web address."""
+        base = (slugify(f"{name} {city}".strip())[:150] or "clinic")
+        slug, n = base, 1
+        while Clinic.objects.filter(slug=slug).exclude(pk=pk).exists():
+            n += 1
+            slug = f"{base}-{n}"
+        return slug
 
     def __str__(self):
         return self.name

@@ -1,10 +1,9 @@
 """The platform admin dashboard: who can reach it, and what it can do."""
 from django.core.cache import cache
 from django.core.management import call_command
-from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from accounts.models import User
+from accounts.models import AuthToken, User
 from audit.models import AuditEvent
 from clinic.models import Clinic
 from masterdata.models import ListDefinition, ListValue
@@ -54,7 +53,12 @@ class PlatformAdminTests(APITestCase):
             self.assertEqual(self.client.get(url).status_code, 403, url)
 
     def test_nobody_else_can_become_a_platform_admin(self):
+        # a doctor cannot manage the team at all, so the attempt stops at 403
         self.login(self.doctor)
+        self.assertEqual(self.client.post("/api/users/", {"phone": "9000000065", "name": "Sneaky", "role": "super_admin", "password": "pw12345!"}, format="json").status_code, 403)
+        # a clinic admin can manage the team, but still cannot create or promote a platform admin
+        clinic_admin = User.objects.create_user("9000000007", "pw12345!", name="Clinic Admin", role="clinic_admin", clinic=self.clinic)
+        self.login(clinic_admin)
         r = self.client.post("/api/users/", {"phone": "9000000066", "name": "Sneaky", "role": "super_admin", "password": "pw12345!"}, format="json")
         self.assertEqual(r.status_code, 400)
         r = self.client.patch(f"/api/users/{self.assistant.id}/", {"role": "super_admin"}, format="json")
@@ -70,13 +74,13 @@ class PlatformAdminTests(APITestCase):
         r = self.client.post("/api/auth/login/", {"phone": "9000000099", "password": "Adm1n!pass"}, format="json")
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.data["user"]["is_super_admin"])
-        r = self.client.post("/api/auth/login/", {"phone": "9000000001", "password": "pw12345!"}, format="json")
+        r = self.client.post("/api/auth/login/", {"phone": "9000000001", "password": "pw12345!", "clinic": self.clinic.id}, format="json")
         self.assertFalse(r.data["user"]["is_super_admin"])
         self.assertEqual(self.admin.role, "super_admin")  # createsuperuser default
 
     def test_a_turned_off_platform_admin_is_locked_out(self):
         other = User.objects.create_superuser("9000000098", "Adm1n!pass", name="Second")
-        token = Token.objects.create(user=other)
+        token = AuthToken.objects.create(user=other)
         self.client.credentials(HTTP_AUTHORIZATION="Token " + token.key)
         self.assertEqual(self.client.get("/api/platform/overview/").status_code, 200)
         other.is_active = False
@@ -174,14 +178,14 @@ class PlatformAdminTests(APITestCase):
 
     def test_turning_an_account_off_signs_it_out(self):
         self.client.force_authenticate(None)
-        login = self.client.post("/api/auth/login/", {"phone": "9000000002", "password": "pw12345!"}, format="json")
+        login = self.client.post("/api/auth/login/", {"phone": "9000000002", "password": "pw12345!", "clinic": self.clinic.id}, format="json")
         token = login.data["token"]
         self.login(self.admin)
         r = self.client.patch(f"/api/platform/users/{self.assistant.id}/", {"is_active": False}, format="json")
         self.assertEqual(r.status_code, 200, r.data)
-        self.assertFalse(Token.objects.filter(key=token).exists())
+        self.assertFalse(AuthToken.objects.filter(key=token).exists())
         self.client.force_authenticate(None)
-        self.assertEqual(self.client.post("/api/auth/login/", {"phone": "9000000002", "password": "pw12345!"}, format="json").status_code, 401)
+        self.assertEqual(self.client.post("/api/auth/login/", {"phone": "9000000002", "password": "pw12345!", "clinic": self.clinic.id}, format="json").status_code, 401)
 
     def test_admin_cannot_lock_themselves_or_the_last_admin_out(self):
         self.login(self.admin)
@@ -196,14 +200,14 @@ class PlatformAdminTests(APITestCase):
         self.assertEqual((a.role, a.phone, a.clinic_id, a.name), ("assistant", "9000000002", self.clinic.id, "Asha K"))
 
     def test_set_password_checks_strength_and_signs_the_person_out(self):
-        token = Token.objects.create(user=self.assistant)
+        token = AuthToken.objects.create(user=self.assistant, clinic=self.clinic)
         self.login(self.admin)
         url = f"/api/platform/users/{self.assistant.id}/set-password/"
         self.assertEqual(self.client.post(url, {"password": "12345"}, format="json").status_code, 400)
         self.assertEqual(self.client.post(url, {"password": "Br4nd!new-pass"}, format="json").status_code, 200)
-        self.assertFalse(Token.objects.filter(key=token.key).exists())
+        self.assertFalse(AuthToken.objects.filter(key=token.key).exists())
         self.client.force_authenticate(None)
-        self.assertEqual(self.client.post("/api/auth/login/", {"phone": "9000000002", "password": "Br4nd!new-pass"}, format="json").status_code, 200)
+        self.assertEqual(self.client.post("/api/auth/login/", {"phone": "9000000002", "password": "Br4nd!new-pass", "clinic": self.clinic.id}, format="json").status_code, 200)
 
     def test_an_admin_can_create_another_admin(self):
         self.login(self.admin)
@@ -305,8 +309,11 @@ class ClinicDirectoryTests(APITestCase):
         r = self.client.get("/api/auth/clinics/")
         self.assertEqual(r.status_code, 200)
         self.assertEqual([c["name"] for c in r.data], ["Smile Care"])  # the turned-off clinic is hidden
-        self.assertEqual(set(r.data[0]), {"id", "name", "city", "state"})
+        self.assertEqual({"id", "slug", "name", "city"} - set(r.data[0]), set())
+        for private in ("poc_name", "poc_phone", "poc_email", "admin_notes", "gst_number", "registration_number", "is_active"):
+            self.assertNotIn(private, r.data[0])
         self.assertNotIn("secret note", str(r.data))
+        self.assertNotIn("9000000010", str(r.data))
         self.assertEqual(len(self.client.get("/api/auth/clinics/?search=pune").data), 1)
         self.assertEqual(len(self.client.get("/api/auth/clinics/?search=zzz").data), 0)
 
@@ -324,7 +331,7 @@ class ClinicDirectoryTests(APITestCase):
 
     def test_signup_then_approval_by_the_platform_admin(self):
         self.client.force_authenticate(None)
-        body = {"name": "Dr New", "phone": "8000000005", "password": "Str0ng!pass", "clinic": self.clinic.id}
+        body = {"role": "doctor", "name": "Dr New", "phone": "8000000005", "password": "Str0ng!pass", "clinic": self.clinic.id}
         self.assertEqual(self.client.post("/api/auth/register/", body, format="json").status_code, 201)
         new = User.objects.get(phone="8000000005")
         self.assertTrue(AuditEvent.objects.filter(action="signup.request", object_id=str(new.id)).exists())
@@ -347,10 +354,11 @@ class ClinicDirectoryTests(APITestCase):
         self.assertTrue(AuditEvent.objects.filter(action="user.approve", object_id=str(new.id)).exists())
 
         self.client.force_authenticate(None)
-        login = self.client.post("/api/auth/login/", {"phone": "8000000005", "password": "Str0ng!pass"})
+        login = self.client.post("/api/auth/login/", {"phone": "8000000005", "password": "Str0ng!pass", "clinic": self.clinic.id})
         self.assertEqual(login.status_code, 200)
         self.client.credentials(HTTP_AUTHORIZATION="Token " + login.data["token"])
-        self.assertEqual(self.client.get("/api/dashboard/").status_code, 200)
+        self.assertEqual(self.client.get("/api/auth/me/").data["clinic_name"], "Smile Care")
+        self.assertEqual(self.client.get("/api/dashboard/").status_code, 403)  # a doctor is not the clinic admin
 
     def test_a_switched_off_account_is_not_shown_as_waiting(self):
         """Turning someone off deliberately must not look like a pending sign-up, and cannot be approved as one."""

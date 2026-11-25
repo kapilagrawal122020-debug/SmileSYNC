@@ -28,5 +28,5 @@ def send_to_staff(user, kind, template, params=()):
 
 
 def alert_doctors(clinic, template, params=(), kind=Message.ALERT):
-    for doctor in clinic.staff.filter(role="doctor", is_active=True):
+    for doctor in clinic.staff.filter(role__in=["clinic_admin", "doctor"], is_active=True):
         send_to_staff(doctor, kind, template, params)

@@ -1,4 +1,5 @@
 from django.contrib.auth.password_validation import validate_password
+from django.db import transaction
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
@@ -16,6 +17,11 @@ class PlatformClinicSerializer(serializers.ModelSerializer):
     patient_count = serializers.IntegerField(read_only=True)
     doctors = serializers.SerializerMethodField()
     pending_count = serializers.IntegerField(read_only=True)
+    admins = serializers.SerializerMethodField()
+    # Optional: create the clinic's first admin together with the clinic (all three, or none)
+    admin_name = serializers.CharField(write_only=True, required=False, allow_blank=True, max_length=100)
+    admin_phone = PhoneField(write_only=True, required=False, allow_blank=True)
+    admin_password = serializers.CharField(write_only=True, required=False, allow_blank=True)
     name = serializers.CharField(max_length=150)
     city = serializers.CharField(max_length=80)
     poc_name = serializers.CharField(max_length=100)
@@ -24,11 +30,21 @@ class PlatformClinicSerializer(serializers.ModelSerializer):
     class Meta:
         model = Clinic
         fields = [
-            "id", "name", "address", "city", "state", "pincode", "location_url", "phone", "email",
+            "id", "slug", "name", "address", "city", "state", "pincode", "location_url", "phone", "email",
             "registration_number", "gst_number", "poc_name", "poc_designation", "poc_phone", "poc_email",
-            "admin_notes", "is_active", "created_at", "staff_count", "patient_count", "pending_count", "doctors",
+            "about", "timings", "admin_notes", "is_active", "created_at", "staff_count", "patient_count", "pending_count",
+            "doctors", "admins", "admin_name", "admin_phone", "admin_password",
         ]
-        read_only_fields = ["id", "created_at"]
+        read_only_fields = ["id", "slug", "created_at"]
+
+    @extend_schema_field(serializers.ListField(child=serializers.DictField()))
+    def get_admins(self, clinic):
+        return [{"id": u.id, "name": u.name, "phone": u.phone, "is_active": u.is_active} for u in clinic.staff.filter(role="clinic_admin")]
+
+    def validate_admin_phone(self, value):
+        if value and User.objects.filter(phone=value).exists():
+            raise serializers.ValidationError("Phone already in use.")
+        return value
 
     def validate_pincode(self, value):
         if value and not (value.isdigit() and len(value) == 6):
@@ -41,6 +57,14 @@ class PlatformClinicSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        given = [attrs.get(k) for k in ("admin_name", "admin_phone", "admin_password")]
+        if any(given):
+            if self.instance is not None:
+                raise serializers.ValidationError({"admin_name": "Add an admin to an existing clinic with the Add admin button."})
+            for key in ("admin_name", "admin_phone", "admin_password"):
+                if not attrs.get(key):
+                    raise serializers.ValidationError({key: "Give the admin's name, mobile number and password together."})
+            validate_password(attrs["admin_password"])
         name = attrs.get("name", getattr(self.instance, "name", ""))
         city = attrs.get("city", getattr(self.instance, "city", ""))
         same = Clinic.objects.filter(name__iexact=name.strip(), city__iexact=city.strip())
@@ -50,9 +74,20 @@ class PlatformClinicSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"name": "A clinic with this name already exists in this city."})
         return attrs
 
+    def create(self, validated_data):
+        admin = {k: validated_data.pop(k, "") for k in ("admin_name", "admin_phone", "admin_password")}
+        with transaction.atomic():
+            clinic = super().create(validated_data)
+            if admin["admin_phone"]:
+                User.objects.create_user(
+                    phone=admin["admin_phone"], password=admin["admin_password"], name=admin["admin_name"],
+                    role=User.CLINIC_ADMIN, clinic=clinic,
+                )
+        return clinic
+
     @extend_schema_field(serializers.ListField(child=serializers.CharField()))
     def get_doctors(self, clinic):
-        return [u.name or u.phone for u in clinic.staff.filter(role="doctor", is_active=True)]
+        return [u.name or u.phone for u in clinic.staff.filter(role__in=["clinic_admin", "doctor"], is_active=True)]
 
 
 class PlatformUserSerializer(serializers.ModelSerializer):

@@ -7,7 +7,6 @@ from django.db.models import Count, Q
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import mixins, serializers, viewsets
-from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -15,6 +14,7 @@ from rest_framework.views import APIView
 
 import audit.services as audit
 from accounts.access import IsSuperAdmin
+from accounts.auth import sign_out_everywhere
 from accounts.models import User
 from audit.models import AuditEvent
 from clinic.models import Clinic
@@ -31,7 +31,7 @@ class OverviewView(APIView):
 
     @extend_schema(responses=inline_serializer("PlatformOverview", {
         "clinics": serializers.IntegerField(), "patients": serializers.IntegerField(), "visits_30_days": serializers.IntegerField(),
-        "staff_by_role": serializers.DictField(), "super_admins": serializers.IntegerField(), "pending_signups": serializers.IntegerField(),
+        "staff_by_role": serializers.DictField(), "super_admins": serializers.IntegerField(), "pending_signups": serializers.IntegerField(), "clinics_without_admin": serializers.IntegerField(),
         "lists": serializers.DictField(), "audit_events_7_days": serializers.IntegerField(),
         "recent_clinics": serializers.ListField(child=serializers.DictField()),
     }))
@@ -46,6 +46,7 @@ class OverviewView(APIView):
             "staff_by_role": roles,
             "super_admins": User.objects.filter(is_superuser=True, is_active=True).count(),
             "pending_signups": User.objects.filter(signup_pending=True, is_active=False).count(),
+            "clinics_without_admin": Clinic.objects.filter(is_active=True).exclude(staff__role="clinic_admin", staff__is_active=True).count(),
             "lists": {"count": ListDefinition.objects.count(), "values": ListValue.objects.filter(clinic__isnull=True).count()},
             "audit_events_7_days": AuditEvent.objects.filter(created_at__gte=now - timedelta(days=7)).count(),
             "recent_clinics": [{"id": c.id, "name": c.name, "city": c.city, "created_at": c.created_at, "staff_count": c.staff_count, "patient_count": c.patient_count} for c in recent],
@@ -81,7 +82,18 @@ class ClinicViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, mixins.Retri
 
     def perform_create(self, serializer):
         clinic = serializer.save()
-        audit.log("clinic.create", self.request, obj=clinic, clinic=clinic, name=clinic.name)
+        audit.log("clinic.create", self.request, obj=clinic, clinic=clinic, name=clinic.name, with_admin=clinic.staff.filter(role="clinic_admin").exists())
+
+    @extend_schema(request=NewAdminSerializer, responses=PlatformUserSerializer)
+    @action(detail=True, methods=["post"], url_path="admins")
+    def add_admin(self, request, pk=None):
+        """Create a clinic admin for this clinic. Only the platform admin can do this: a clinic admin cannot create the first one."""
+        clinic = self.get_object()
+        data = NewAdminSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        user = User.objects.create_user(role=User.CLINIC_ADMIN, clinic=clinic, **data.validated_data)
+        audit.log("clinic.admin.create", request, obj=user, clinic=clinic)
+        return Response(PlatformUserSerializer(user).data, status=201)
 
     def perform_update(self, serializer):
         clinic = serializer.save()
@@ -128,7 +140,7 @@ class UserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Updat
                 raise ValidationError({"is_active": "At least one platform admin must stay active."})
         user = serializer.save()
         if not user.is_active:
-            Token.objects.filter(user=user).delete()  # signs them out everywhere
+            sign_out_everywhere(user)
         audit.log("user.update", self.request, obj=user, clinic=user.clinic, fields=sorted(serializer.validated_data), active=user.is_active)
 
     @extend_schema(request=None, responses=PlatformUserSerializer)
@@ -154,7 +166,7 @@ class UserViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.Updat
         data.is_valid(raise_exception=True)
         user.set_password(data.validated_data["password"])
         user.save(update_fields=["password"])
-        Token.objects.filter(user=user).delete()
+        sign_out_everywhere(user)
         audit.log("user.set-password", request, obj=user, clinic=user.clinic)
         return Response({"detail": "Password changed. The person has been signed out."})
 

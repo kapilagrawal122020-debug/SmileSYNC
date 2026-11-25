@@ -1,3 +1,5 @@
+import binascii
+import os
 from datetime import timedelta
 
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
@@ -27,9 +29,14 @@ class User(AbstractBaseUser, PermissionsMixin):
     """Staff (doctor, consultant, assistant) and patients. The phone number is the login."""
 
     DOCTOR, CONSULTANT, ASSISTANT, PATIENT = "doctor", "consultant", "assistant", "patient"
-    SUPER_ADMIN = "super_admin"  # platform owner: manages lists, clinics and accounts, never clinical data
+    # Two kinds of admin. The super admin runs the platform (every clinic, every list) and never reads clinical data.
+    # A clinic admin runs one clinic: its team, profile, billing, stock and documents. Clinics and clinic admins are
+    # created by the super admin only.
+    SUPER_ADMIN = "super_admin"
+    CLINIC_ADMIN = "clinic_admin"
     ROLE_CHOICES = [
-        (DOCTOR, "Doctor / owner"),
+        (CLINIC_ADMIN, "Clinic admin"),
+        (DOCTOR, "Doctor"),
         (CONSULTANT, "Consultant"),
         (ASSISTANT, "Assistant"),
         (PATIENT, "Patient"),
@@ -60,6 +67,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     def is_platform_admin(self):
         return self.is_superuser and self.is_active
 
+    @property
+    def is_clinic_admin(self):
+        return self.role == self.CLINIC_ADMIN and self.is_active
+
     def __str__(self):
         return f"{self.name or self.phone} ({self.role})"
 
@@ -74,3 +85,21 @@ class Otp(models.Model):
 
     def is_expired(self):
         return self.created_at < timezone.now() - timedelta(minutes=10)
+
+
+class AuthToken(models.Model):
+    """A login session. It remembers which clinic the person signed in for, so a patient who visits two
+    clinics only sees the clinic they chose, and staff stay inside their own. The platform admin has no clinic."""
+
+    key = models.CharField(max_length=40, primary_key=True)
+    user = models.ForeignKey(User, related_name="auth_tokens", on_delete=models.CASCADE)
+    clinic = models.ForeignKey("clinic.Clinic", null=True, blank=True, on_delete=models.CASCADE, related_name="+")
+    created = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if not self.key:
+            self.key = binascii.hexlify(os.urandom(20)).decode()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.user_id}@{self.clinic_id}"

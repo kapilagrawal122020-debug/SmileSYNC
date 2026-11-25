@@ -8,7 +8,7 @@ from patients.models import Patient
 
 
 class Command(BaseCommand):
-    help = "Create a demo clinic with a doctor, an assistant, stock and a patient (development only)."
+    help = "Create a demo clinic with a clinic admin, a doctor, an assistant, stock and a patient (development only)."
 
     def handle(self, *args, **options):
         if not settings.DEBUG:
@@ -16,7 +16,8 @@ class Command(BaseCommand):
 
         clinic, _ = Clinic.objects.get_or_create(name="Smile Care Dental", defaults={"city": "Pune"})
         for phone, name, role, password in [
-            ("9000000001", "Dr. Demo", User.DOCTOR, "doctor123"),
+            ("9000000001", "Dr. Demo", User.CLINIC_ADMIN, "doctor123"),
+            ("9000000004", "Dr. Rao", User.DOCTOR, "doctor123"),
             ("9000000002", "Asha (assistant)", User.ASSISTANT, "assist123"),
         ]:
             if not User.objects.filter(phone=phone).exists():
@@ -39,5 +40,6 @@ class Command(BaseCommand):
             defaults={"name": "Ravi Kumar", "locality": "Kothrud", "chief_complaint": "Toothache", "consent_data": True, "consent_whatsapp": True},
         )
         self.stdout.write(self.style.SUCCESS(
-            "Demo ready. Doctor 9000000001 / doctor123, assistant 9000000002 / assist123, patient 9111111111 (OTP login)."
+            f"Demo ready for clinic id {clinic.id} ({clinic.slug}). Clinic admin 9000000001 / doctor123, doctor 9000000004 / doctor123, "
+            "assistant 9000000002 / assist123, patient 9111111111 (code login). Pick the clinic when you log in."
         ))

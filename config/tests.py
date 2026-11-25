@@ -31,6 +31,7 @@ class SmileSyncTests(APITestCase):
         cls.doctor = User.objects.create_user("9000000001", "pw12345", name="Dr A", role="doctor", clinic=cls.clinic)
         cls.assistant = User.objects.create_user("9000000002", "pw12345", name="Asha", role="assistant", clinic=cls.clinic)
         cls.other_doctor = User.objects.create_user("9000000003", "pw12345", name="Dr B", role="doctor", clinic=cls.other_clinic)
+        cls.clinic_admin = User.objects.create_user("9000000005", "pw12345", name="Clinic Admin", role="clinic_admin", clinic=cls.clinic)
         cls.patient = Patient.objects.create(
             clinic=cls.clinic, name="Ravi", phone="9111111111", consent_data=True,
             consent_whatsapp=True, private_notes="asks for discount",
@@ -44,12 +45,23 @@ class SmileSyncTests(APITestCase):
         self.client.force_authenticate(user)
 
     # ---- auth -------------------------------------------------------------------------
-    def test_staff_login_with_phone_and_password(self):
-        r = self.client.post("/api/auth/login/", {"phone": "+91 90000 00001", "password": "pw12345"})
+    def test_staff_login_is_for_one_clinic(self):
+        r = self.client.post("/api/auth/login/", {"phone": "+91 90000 00001", "password": "pw12345", "clinic": self.clinic.id})
         self.assertEqual(r.status_code, 200)
         self.assertIn("token", r.data)
-        bad = self.client.post("/api/auth/login/", {"phone": "9000000001", "password": "wrong"})
+        self.assertEqual((r.data["user"]["clinic_id"], r.data["user"]["clinic_name"]), (self.clinic.id, "Smile Care"))
+        bad = self.client.post("/api/auth/login/", {"phone": "9000000001", "password": "wrong", "clinic": self.clinic.id})
         self.assertEqual(bad.status_code, 401)
+        # right password, but the person works at another clinic: same answer as a wrong password
+        other = self.client.post("/api/auth/login/", {"phone": "9000000001", "password": "pw12345", "clinic": self.other_clinic.id})
+        self.assertEqual(other.status_code, 401)
+        self.assertEqual(other.data["detail"], bad.data["detail"])
+        # the clinic is required for everyone except the platform admin
+        none = self.client.post("/api/auth/login/", {"phone": "9000000001", "password": "pw12345"})
+        self.assertEqual(none.status_code, 400)
+        self.assertIn("clinic", none.data)
+        # a clinic that does not exist
+        self.assertEqual(self.client.post("/api/auth/login/", {"phone": "9000000001", "password": "pw12345", "clinic": 99999}).status_code, 401)
 
     def test_doctor_signup_picks_a_listed_clinic_and_waits_for_approval(self):
         body = {
@@ -65,34 +77,98 @@ class SmileSyncTests(APITestCase):
         self.assertFalse(user.is_active)
         self.assertNotEqual(user.password, "Kap@123il")  # stored hashed
         # the right password gets a clear message, a wrong one does not reveal that the account exists
-        waiting = self.client.post("/api/auth/login/", {"phone": "8979772850", "password": "Kap@123il"})
+        waiting = self.client.post("/api/auth/login/", {"phone": "8979772850", "password": "Kap@123il", "clinic": self.clinic.id})
         self.assertEqual(waiting.status_code, 403)
         self.assertIn("waiting for approval", waiting.data["detail"])
-        self.assertEqual(self.client.post("/api/auth/login/", {"phone": "8979772850", "password": "nope"}).status_code, 401)
+        self.assertEqual(self.client.post("/api/auth/login/", {"phone": "8979772850", "password": "nope", "clinic": self.clinic.id}).status_code, 401)
+        # picking some other clinic does not reveal that the account exists
+        self.assertEqual(self.client.post("/api/auth/login/", {"phone": "8979772850", "password": "Kap@123il", "clinic": self.other_clinic.id}).status_code, 401)
 
     def test_signup_rejects_unknown_clinics_duplicates_weak_passwords_and_other_roles(self):
-        ok = {"name": "A", "phone": "8000000001", "password": "Str0ng!pass", "clinic": self.clinic.id}
+        ok = {"role": "doctor", "name": "A", "phone": "8000000001", "password": "Str0ng!pass", "clinic": self.clinic.id}
         post = lambda **kw: self.client.post("/api/auth/register/", {**ok, **kw}, format="json").status_code
         self.assertEqual(post(phone="9000000001"), 400)  # phone taken
         self.assertEqual(post(password="12345"), 400)
-        self.assertEqual(post(role="assistant"), 400)
+        self.assertEqual(post(role="clinic_admin"), 400)  # clinic admins are created by the platform admin only
+        self.assertEqual(post(role="super_admin"), 400)
+        self.assertEqual(post(role=""), 400)
+        self.assertEqual(post(role="assistant", phone="8000000009"), 201)  # assistants and consultants can ask to join
         self.assertEqual(post(clinic=99999), 400)  # not in the directory
         self.assertEqual(post(clinic=""), 400)
         body = {k: v for k, v in ok.items() if k != "clinic"}
         self.assertEqual(self.client.post("/api/auth/register/", {**body, "clinic_name": "Brand New Clinic"}, format="json").status_code, 400)  # typing a name no longer creates a clinic
         self.assertFalse(Clinic.objects.filter(name="Brand New Clinic").exists())
         self.assertFalse(User.objects.filter(phone="8000000001").exists())  # nothing half-created
+        self.assertFalse(User.objects.get(phone="8000000009").is_active)  # and the assistant waits for approval too
+
+    def test_patient_can_register_at_a_clinic_and_log_in_with_a_code(self):
+        body = {"role": "patient", "name": "Meera", "phone": "7000000001", "clinic": self.clinic.id, "consent_data": True, "consent_whatsapp": True}
+        r = self.client.post("/api/auth/register/", body, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertFalse(r.data["pending"])  # no approval for patients
+        patient = Patient.objects.get(clinic=self.clinic, phone="7000000001")
+        self.assertTrue(patient.consent_data and patient.consent_whatsapp and patient.consent_at)
+        self.assertEqual(self.client.post("/api/auth/register/", body, format="json").status_code, 201)  # again: no duplicate
+        self.assertEqual(Patient.objects.filter(phone="7000000001").count(), 1)
+        no_consent = self.client.post("/api/auth/register/", {**body, "phone": "7000000002", "consent_data": False}, format="json")
+        self.assertEqual(no_consent.status_code, 400)
+        self.assertFalse(Patient.objects.filter(phone="7000000002").exists())
+        # a staff number cannot be registered as a patient
+        self.assertEqual(self.client.post("/api/auth/register/", {**body, "phone": "9000000001"}, format="json").status_code, 400)
+        code = self.client.post("/api/auth/otp/request/", {"phone": "7000000001", "clinic": self.clinic.id}).data["dev_otp"]
+        ok = self.client.post("/api/auth/otp/verify/", {"phone": "7000000001", "code": code, "clinic": self.clinic.id})
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(ok.data["user"]["clinic_name"], "Smile Care")
 
     def test_patient_otp_login_sees_only_own_data(self):
-        r = self.client.post("/api/auth/otp/request/", {"phone": "9111111111"})
+        r = self.client.post("/api/auth/otp/request/", {"phone": "9111111111", "clinic": self.clinic.id})
         code = r.data["dev_otp"]
-        self.assertEqual(self.client.post("/api/auth/otp/verify/", {"phone": "9111111111", "code": "000000"}).status_code, 400)
-        r = self.client.post("/api/auth/otp/verify/", {"phone": "9111111111", "code": code})
+        self.assertEqual(self.client.post("/api/auth/otp/verify/", {"phone": "9111111111", "code": "000000", "clinic": self.clinic.id}).status_code, 400)
+        r = self.client.post("/api/auth/otp/verify/", {"phone": "9111111111", "code": code, "clinic": self.clinic.id})
         self.assertEqual(r.status_code, 200)
         self.client.credentials(HTTP_AUTHORIZATION="Token " + r.data["token"])
         self.assertEqual(self.client.get("/api/patients/").data["count"], 1)
         self.assertEqual(self.client.get("/api/inventory/items/").status_code, 403)
         self.assertEqual(self.client.get("/api/treatments/").status_code, 403)
+
+    def test_patient_session_is_limited_to_the_clinic_they_signed_in_for(self):
+        """The same phone is a patient at two clinics. Signing in at one shows only that clinic's records."""
+        Patient.objects.create(clinic=self.other_clinic, name="Ravi K", phone="9111111111", consent_data=True)
+        Visit.objects.create(patient=self.patient, scheduled_at=timezone.now() + timedelta(days=1))
+        other_patient = Patient.objects.get(clinic=self.other_clinic, phone="9111111111")
+        Visit.objects.create(patient=other_patient, scheduled_at=timezone.now() + timedelta(days=2))
+
+        def sign_in(clinic):
+            code = self.client.post("/api/auth/otp/request/", {"phone": "9111111111", "clinic": clinic.id}).data["dev_otp"]
+            self.client.credentials()
+            r = self.client.post("/api/auth/otp/verify/", {"phone": "9111111111", "code": code, "clinic": clinic.id})
+            self.assertEqual(r.status_code, 200, r.data)
+            self.client.credentials(HTTP_AUTHORIZATION="Token " + r.data["token"])
+            return r.data["token"]
+
+        t1 = sign_in(self.clinic)
+        self.assertEqual([p["id"] for p in self.client.get("/api/patients/").data["results"]], [self.patient.id])
+        self.assertEqual(self.client.get("/api/visits/").data["count"], 1)
+        self.assertEqual([c["id"] for c in self.client.get("/api/clinics/").data["results"]], [self.clinic.id])
+        self.assertEqual(self.client.get(f"/api/patients/{other_patient.id}/").status_code, 404)
+        t2 = sign_in(self.other_clinic)
+        self.assertNotEqual(t1, t2)  # one session per clinic
+        self.assertEqual([p["id"] for p in self.client.get("/api/patients/").data["results"]], [other_patient.id])
+        self.assertEqual([c["id"] for c in self.client.get("/api/clinics/").data["results"]], [self.other_clinic.id])
+        # logging out of one clinic leaves the other signed in
+        self.client.post("/api/auth/logout/")
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 401)
+        self.client.credentials(HTTP_AUTHORIZATION="Token " + t1)
+        self.assertEqual(self.client.get("/api/auth/me/").status_code, 200)
+
+    def test_an_otp_for_one_clinic_does_not_open_a_clinic_you_do_not_belong_to(self):
+        code = self.client.post("/api/auth/otp/request/", {"phone": "9111111111", "clinic": self.clinic.id}).data["dev_otp"]
+        r = self.client.post("/api/auth/otp/verify/", {"phone": "9111111111", "code": code, "clinic": self.other_clinic.id})
+        self.assertEqual(r.status_code, 400)
+        # and no code is even sent for a clinic where this number is not a patient
+        miss = self.client.post("/api/auth/otp/request/", {"phone": "9111111111", "clinic": self.other_clinic.id})
+        self.assertNotIn("dev_otp", miss.data)
+        self.assertEqual(self.client.post("/api/auth/otp/request/", {"phone": "9111111111"}).status_code, 400)  # clinic is required
 
     # ---- registration -----------------------------------------------------------------
     def test_register_patient_rules(self):
@@ -146,7 +222,7 @@ class SmileSyncTests(APITestCase):
 
     def test_monthly_count_logs_variance(self):
         item = StockItem.objects.create(clinic=self.clinic, name="Gloves", unit="pcs", quantity=100)
-        self.login(self.doctor)
+        self.login(self.clinic_admin)
         r = self.client.post(f"/api/inventory/items/{item.id}/count/", {"counted": 90})
         self.assertEqual(r.data["variance"], Decimal("-10"))
         self.assertEqual(self.client.get(f"/api/inventory/movements/?item={item.id}").data["count"], 1)
@@ -204,7 +280,7 @@ class SmileSyncTests(APITestCase):
         self.assertEqual(self.client.post("/api/payments/", {"invoice": inv["id"], "amount": "1000", "method": "upi", "reference": "UTR123"}).status_code, 201)
         self.assertEqual(self.client.post("/api/payments/", {"invoice": inv["id"], "amount": "800"}).status_code, 400)  # more than due
         self.assertEqual(self.client.get(f"/api/invoices/{inv['id']}/").data["due"], "700.00")
-        self.login(self.doctor)
+        self.login(self.clinic_admin)
         self.assertEqual(self.client.get("/api/dashboard/").data["dues"], Decimal("700"))
 
     def test_patient_feedback_low_rating_alerts_doctor(self):
@@ -214,7 +290,7 @@ class SmileSyncTests(APITestCase):
         r = self.client.post("/api/feedback/", {"patient": self.patient.id, "rating": 2, "comment": "Long wait"})
         self.assertEqual(r.status_code, 201, r.data)
         self.assertTrue(Message.objects.filter(kind="alert", template="low_rating_alert", to_phone="9000000001").exists())
-        self.login(self.doctor)
+        self.login(self.clinic_admin)
         fid = self.client.get("/api/feedback/").data["results"][0]["id"]
         self.assertEqual(self.client.post(f"/api/feedback/{fid}/reply/", {"reply": "Sorry!"}).data["reply"], "Sorry!")
 
@@ -234,7 +310,7 @@ class SmileSyncTests(APITestCase):
 
         self.patient.consent_whatsapp = False
         self.patient.save()
-        self.login(self.doctor)
+        self.login(self.clinic_admin)
         res = self.client.post("/api/messages/broadcast/", {"template": "festive_offer", "params": ["Diwali"]}, format="json")
         self.assertEqual(res.data["patients"], 0)  # opted-out patients are not messaged
 
@@ -271,7 +347,7 @@ class SmileSyncTests(APITestCase):
         self.assertEqual((after["used"], after["balance"]), ("10000.00", "0.00"))
         s = self.client.get(f"/api/patients/{self.patient.id}/billing/").data
         self.assertEqual((s["billed"], s["paid"], s["due"], s["advance_balance"]), ("34000.00", "10000.00", "24000.00", "0.00"))
-        self.login(self.doctor)
+        self.login(self.clinic_admin)
         self.assertEqual(self.client.get("/api/dashboard/").data["dues"], Decimal("24000"))  # advance money counts as paid
 
     def test_without_the_flag_the_advance_is_left_alone(self):
@@ -312,14 +388,14 @@ class SmileSyncTests(APITestCase):
         r = self.client.post("/api/payments/", {"invoice": inv["id"], "amount": "500", "method": "advance"}, format="json")
         self.assertEqual(r.status_code, 400)
 
-    def test_refund_is_recorded_and_doctor_only(self):
+    def test_refund_is_recorded_and_clinic_admin_only(self):
         self.login(self.assistant)
         adv = self.new_advance("5000")
         inv = self.new_invoice("1000")
         self.client.post(f"/api/invoices/{inv['id']}/apply-advance/", {}, format="json")  # 1000 used, 4000 left
         self.assertEqual(self.client.post(f"/api/advances/{adv['id']}/refund/", {"amount": "100"}, format="json").status_code, 403)
 
-        self.login(self.doctor)
+        self.login(self.clinic_admin)
         url = f"/api/advances/{adv['id']}/refund/"
         self.assertEqual(self.client.post(url, {"amount": "4500"}, format="json").status_code, 400)  # more than is left
         r = self.client.post(url, {"amount": "1500", "note": "Treatment cancelled"}, format="json")
@@ -329,14 +405,14 @@ class SmileSyncTests(APITestCase):
         self.assertEqual(len(r.data["refunds"]), 2)  # one row per refund
         self.assertEqual(self.client.post(url, {}, format="json").status_code, 400)  # nothing left
 
-    def test_delete_only_unused_advances_by_the_doctor(self):
+    def test_delete_only_unused_advances_by_the_clinic_admin(self):
         self.login(self.assistant)
         used = self.new_advance("800", received_at=(timezone.now() - timedelta(days=1)).isoformat())  # older, so used first
         mistake = self.new_advance("700")
         inv = self.new_invoice("800")
         self.client.post(f"/api/invoices/{inv['id']}/apply-advance/", {"amount": "800"}, format="json")
         self.assertEqual(self.client.delete(f"/api/advances/{mistake['id']}/").status_code, 403)  # assistants cannot delete money records
-        self.login(self.doctor)
+        self.login(self.clinic_admin)
         self.assertEqual(self.client.delete(f"/api/advances/{used['id']}/").status_code, 400)
         self.assertEqual(self.client.delete(f"/api/advances/{mistake['id']}/").status_code, 204)
 
@@ -371,7 +447,7 @@ class SmileSyncTests(APITestCase):
         inv = self.new_invoice("34000", paid_now="20000", paid_method="upi", paid_reference="UTR55")
         self.assertEqual((inv["total"], inv["paid"], inv["due"], inv["advance_applied"]), ("34000.00", "20000.00", "14000.00", "0.00"))
         self.assertEqual((inv["payments"][0]["method"], inv["payments"][0]["amount"], inv["payments"][0]["reference"]), ("upi", "20000.00", "UTR55"))
-        self.login(self.doctor)
+        self.login(self.clinic_admin)
         self.assertEqual(self.client.get("/api/dashboard/").data["dues"], Decimal("14000"))
 
     def test_advance_and_money_paid_now_together(self):

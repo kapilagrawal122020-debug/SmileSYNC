@@ -6,7 +6,7 @@ from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from accounts.access import ALL, CLINICAL, OWNER, STAFF, ClinicScopedMixin, file_response
+from accounts.access import ALL, CLINICAL, OWNER, STAFF, ClinicScopedMixin, file_response, session_clinic_id
 from inventory.serializers import UseStockSerializer
 from inventory.services import change_stock, deduct_for_treatment
 from inventory.models import StockMovement
@@ -263,7 +263,7 @@ class FeedbackViewSet(
         user = self.request.user
         patient = serializer.validated_data.get("patient")
         if user.role == "patient":
-            if patient is None or patient.user_id != user.id:
+            if patient is None or patient.user_id != user.id or (session_clinic_id(user) and patient.clinic_id != session_clinic_id(user)):
                 raise serializers.ValidationError({"patient": "Choose one of your own patient records."})
         elif patient is None:
             raise serializers.ValidationError({"patient": "This field is required."})

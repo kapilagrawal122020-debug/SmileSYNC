@@ -1,20 +1,23 @@
 from datetime import date, timedelta
 
-from django.db.models import Avg, Sum
+from django.db.models import Avg, Prefetch, Q, Sum
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import extend_schema, inline_serializer
+from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from accounts.access import OWNER, RolePermission, ClinicScopedMixin, file_response
+from accounts.access import ALL, OWNER, RolePermission, ClinicScopedMixin, file_response
+from accounts.models import User
 from hygiene.models import HygieneCheck
 from inventory.services import stock_alerts
 from patients.models import Feedback, InvoiceItem, Payment, Visit
 
 from .models import Chair, Clinic, ClinicDocument
-from .serializers import ChairSerializer, ClinicSerializer, DocumentSerializer
+from .serializers import ChairSerializer, ClinicSerializer, DocumentSerializer, PublicClinicSerializer
 
 
 class ClinicViewSet(
@@ -27,7 +30,7 @@ class ClinicViewSet(
     serializer_class = ClinicSerializer
     clinic_lookup = "id"
     patient_lookup = "patients__user"
-    read_roles = {"doctor", "consultant", "assistant", "patient"}
+    read_roles = ALL
     write_roles = OWNER
 
 
@@ -62,7 +65,7 @@ class DocumentViewSet(ClinicScopedMixin, viewsets.ModelViewSet):
 
 
 class DashboardView(APIView):
-    """One-call summary for the doctor's home screen."""
+    """One-call summary for the clinic admin's home screen."""
 
     permission_classes = [RolePermission]
     read_roles = OWNER
@@ -75,6 +78,7 @@ class DashboardView(APIView):
         "documents_expiring_in_60_days": serializers.IntegerField(),
         "hygiene_photos_to_review": serializers.IntegerField(),
         "locked_chairs": serializers.IntegerField(),
+        "pending_signups": serializers.IntegerField(),
         "dues": serializers.DecimalField(max_digits=12, decimal_places=2),
         "average_rating_30_days": serializers.FloatField(allow_null=True),
     }))
@@ -97,6 +101,41 @@ class DashboardView(APIView):
             ).count(),
             "hygiene_photos_to_review": HygieneCheck.objects.filter(clinic=clinic, status="pending").count(),
             "locked_chairs": Chair.objects.filter(clinic=clinic, status="locked").count(),
+            "pending_signups": User.objects.filter(clinic=clinic, signup_pending=True, is_active=False).count(),
             "dues": billed - paid,
             "average_rating_30_days": round(rating, 1) if rating else None,
         })
+
+
+class PublicClinicViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    """The marketplace: every clinic the platform admin has switched on. No login needed.
+
+    Find clinics with ?search=name-or-city, ?city= or ?state=. Open one at /api/public/clinics/{slug}/.
+    Patients and staff choose their clinic from here to sign up or log in."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "clinic_list"
+    serializer_class = PublicClinicSerializer
+    pagination_class = None
+    lookup_field = "slug"
+
+    @extend_schema(parameters=[
+        OpenApiParameter("search", str, description="Name or city contains"), OpenApiParameter("city", str), OpenApiParameter("state", str),
+    ])
+    def list(self, request, *args, **kwargs):
+        return Response(self.get_serializer(self.filter_queryset(self.get_queryset())[:200], many=True).data)
+
+    def get_queryset(self):
+        qs = Clinic.objects.filter(is_active=True).prefetch_related(
+            Prefetch("staff", queryset=User.objects.filter(is_active=True, role__in=["doctor", "consultant", "clinic_admin"]).order_by("name")),
+        ).order_by("name")
+        p = self.request.query_params
+        if p.get("search", "").strip():
+            qs = qs.filter(Q(name__icontains=p["search"].strip()) | Q(city__icontains=p["search"].strip()))
+        if p.get("city"):
+            qs = qs.filter(city__iexact=p["city"].strip())
+        if p.get("state"):
+            qs = qs.filter(state__iexact=p["state"].strip())
+        return qs

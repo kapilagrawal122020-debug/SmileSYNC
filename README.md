@@ -1,7 +1,7 @@
 # SmileSYNC backend
 
-Django REST Framework API for the SmileSYNC clinic app and patient app.
-Covers all 8 modules of the developer brief. Plain Django + DRF, token auth, SQLite in development.
+Django REST Framework API for SmileSYNC: a marketplace of dental clinics. Every clinic is an organisation with its own team,
+patients, stock and billing, and everything is scoped to the clinic you sign in to. Plain Django + DRF, token auth, SQLite in development.
 
 ## Run it
 
@@ -10,28 +10,48 @@ python -m venv venv
 venv\Scripts\activate          # Windows (macOS/Linux: source venv/bin/activate)
 pip install -r requirements.txt
 python manage.py migrate
-python manage.py seed_demo        # demo clinic, doctor, assistant, stock, one patient
+python manage.py seed_demo        # demo clinic with a clinic admin, doctor, assistant, stock, one patient
 python manage.py runserver
 python manage.py test             # 16 tests covering the flows in the brief
 ```
 
-Demo logins (after `seed_demo`): doctor `9000000001` / `doctor123`, assistant `9000000002` / `assist123`,
-patient `9111111111` (OTP, shown in the response while `DEBUG=1`).
+Demo logins (after `seed_demo`): clinic admin `9000000001` / `doctor123`, doctor `9000000004` / `doctor123`, assistant `9000000002` / `assist123`,
+patient `9111111111` (code login, shown in the response while `DEBUG=1`). **Every login names the clinic** (`"clinic": <id>`), except the platform admin.
 
-Onboard a real clinic:
-1. The platform admin adds the clinic in the dashboard (Clinics, or `POST /api/platform/clinics/`) with its location and point of contact.
-2. The doctor signs up with `POST /api/auth/register/` (name, phone, password, `clinic` = the id of a listed clinic, optional
-   designation, speciality, registration_number). The list to choose from is `GET /api/auth/clinics/` (public: name and place only).
-   Typing a new clinic name is not possible. The account is created switched off and no token is returned.
-3. The platform admin checks the clinic with its contact person and approves the doctor (Accounts, or
-   `POST /api/platform/users/{id}/approve/`). Until then login answers 403 "waiting for approval" (only after the right password).
-4. The doctor then creates assistants and consultants through `POST /api/users/`.
+## Clinics as organisations
+
+SmileSYNC is a marketplace: many clinics, each its own organisation. Nobody creates a clinic themselves.
+
+| Who | What they are | What they can do |
+|-----|---------------|------------------|
+| **Super admin** (`super_admin`, a Django superuser) | runs the platform | add and edit clinics, create clinic admins, approve anyone, edit the master lists, read the audit log. Sees counts only, **never patient records** |
+| **Clinic admin** (`clinic_admin`) | runs one clinic | its team (add, approve, edit roles, switch off), clinic profile and public page, billing corrections and refunds, stock, documents, broadcasts, dashboard. Can do everything a doctor can |
+| Doctor, consultant | treat patients | clinical records. A doctor also reads private notes and reviews hygiene photos |
+| Assistant | front desk | patients, appointments, images, hygiene photos, stock in |
+| Patient | a patient of one or more clinics | their own records, **in the clinic they signed in to** |
+
+Onboarding a clinic:
+1. The super admin adds the clinic in the dashboard (Clinics, or `POST /api/platform/clinics/`), with its location, point of contact and, optionally,
+   its first clinic admin (`admin_name`, `admin_phone`, `admin_password`). More admins: `POST /api/platform/clinics/{id}/admins/`.
+2. The clinic appears on the marketplace (`GET /api/public/clinics/`) with a web address from its name, such as `/c/smile-care-pune`.
+3. Its **team** asks to join: `POST /api/auth/register/` with `role` (doctor, consultant or assistant) and `clinic`. The account is created switched off.
+   The **clinic admin** approves it (Team page, or `POST /api/users/{id}/approve/`). Until then login answers 403 "waiting for approval".
+   The super admin can approve anyone too.
+4. **Patients** register at a clinic with `role: "patient"`, `clinic` and `consent_data`, or are registered by staff. They sign in with a WhatsApp code.
+
+Signing in (all per clinic):
+* Staff: `POST /api/auth/login/ {phone, password, clinic}`. The wrong clinic gets the same 401 as a wrong password. The super admin sends no clinic.
+* Patients: `POST /api/auth/otp/request/ {phone, clinic}` then `/otp/verify/ {phone, code, clinic}`. A code is only sent to a number that is a patient of that clinic.
+* A session (`AuthToken`) belongs to one person **and one clinic**, so the same phone can be a patient at two clinics with two separate sessions,
+  and each shows only its own clinic's data. Logging out ends only that session.
+
+Not supported yet: one staff account working at several clinics. Today a staff member belongs to one clinic.
 
 ## Try the API in Swagger
 
 Start the server and open **http://localhost:8000/api/docs/** (raw OpenAPI schema: `/api/schema/`).
 
-1. Open `POST /api/auth/login/`, click *Try it out*, send `{"phone": "9000000001", "password": "doctor123"}` and copy the `token`.
+1. Open `POST /api/auth/login/`, click *Try it out*, send `{"phone": "9000000001", "password": "doctor123", "clinic": 1}` and copy the `token`.
 2. Click **Authorize** at the top and enter `Token <the token>`.
 3. Every endpoint now works from the page. Swagger remembers the token across reloads.
 
@@ -54,7 +74,7 @@ mkvirtualenv --python=/usr/bin/python3.13 smilesync-env
 pip install -r requirements.txt
 cp .env.example .env && nano .env     # DEBUG=0, ALLOWED_HOSTS=<username>.pythonanywhere.com, CORS_ALLOWED_ORIGINS=<frontend url>
 python manage.py migrate
-python manage.py createsuperuser      # then add the Clinic and its doctor in /admin/
+python manage.py createsuperuser      # the super admin. Add clinics (and their admins) from the dashboard
 python manage.py collectstatic --noinput
 ```
 
@@ -93,13 +113,13 @@ Schedule `python manage.py run_job <name>` under the **Tasks** tab (see `messagi
 
 | App         | What it holds |
 |-------------|---------------|
-| `accounts`  | User (phone login, 4 roles), staff password login, patient OTP login, role helpers in `access.py` |
-| `clinic`    | Clinic profile, chairs, document vault (expiry alerts), dashboard |
+| `accounts`  | User (phone login, roles), clinic-scoped sessions (`AuthToken`), staff password login, patient code login, role helpers in `access.py` |
+| `clinic`    | Clinic profile and marketplace page, chairs, document vault (expiry alerts), dashboard |
 | `patients`  | Patients, visits, treatments, images, invoices, payments, feedback |
 | `inventory` | Item master, usage rules, stock-in, auto-deduct, alerts, monthly count |
 | `hygiene`   | Photo-verified checks, doctor review, chair unlock, compliance score |
 | `messaging` | WhatsApp sender, message log, broadcasts, reply webhook, scheduled jobs |
-| `masterdata` | Master lists (dropdown values) the platform admin edits: lists, values, import, export, seed |
+| `masterdata` | Master lists (dropdown values) the super admin edits: lists, values, import, export, seed |
 | `audit`     | Append-only log of sign-ins, list changes, account changes, history reviews |
 | `platform_admin` | The super admin dashboard API (`/api/platform/*`) |
 
@@ -108,12 +128,15 @@ All routes are in `config/urls.py`.
 ## How access works
 
 Send `Authorization: Token <token>`. Every view lists the roles that may read and write
-(`read_roles`, `write_roles` in `accounts/access.py`), following the visibility table in the brief.
+(`read_roles`, `write_roles` in `accounts/access.py`). The role groups are `OWNER` (clinic admin), `CLINICAL`, `REVIEWERS`, `STAFF`, `ALL`.
 
-* Staff only ever see rows of their own clinic. Patients only see their own rows.
+* Staff only ever see rows of their own clinic. A patient only sees their own rows in the clinic of their session.
 * A related object from another clinic (patient, visit, item...) is rejected on write.
-* Private notes are doctor-only. Treatment plans: assistants view, doctor and consultants edit.
+* Private notes: doctors and the clinic admin. Treatment plans: assistants view, clinical roles edit.
+* A clinic always keeps at least one active clinic admin. Nobody can turn off, demote or remove themselves.
 * Files are never public. Every download is an API endpoint that checks role and clinic.
+* The marketplace (`/api/public/clinics/`) is open and only holds what a clinic publishes: name, place, address, phone, email, links, about,
+  timings and its doctors' names and specialities. Never the point of contact, internal notes or registration numbers.
 
 ## Platform admin (super admin) dashboard
 
@@ -131,8 +154,8 @@ assistants and patients get 403. The web app shows the **Admin** menu only to th
   and email, and internal notes are optional. The same name in the same city is refused. Clinics are never deleted, only turned off
   (`is_active`): a turned-off clinic disappears from the sign-up list and its existing staff keep working. The point of contact and
   internal notes are never returned by the clinic-facing `/api/clinics/`, and a clinic's name can only be changed here.
-* **Sign-up approval**: `GET /api/platform/users/?pending=true` lists doctors waiting for approval, and the overview counts them.
-  Anyone who can see a clinic's patients should be someone the platform team has verified, which is why picking a clinic is not enough.
+* **Sign-up approval**: `GET /api/platform/users/?pending=true` lists everyone waiting for approval, and the overview counts them. Clinic admins approve
+  their own team, so most requests never reach the super admin. Choosing a clinic is not enough to get in: someone must approve the account.
 * `GET /api/platform/overview/`, `clinics/`, `users/` (filter, turn on or off, `set-password`),
   `audit/` (filter, search, paged), and the lists below.
 * **Master lists**: `GET /api/platform/lists/`, `GET /api/platform/lists/{key}/`, `POST .../{key}/values/`, `PATCH /api/platform/list-values/{id}/`,
@@ -145,7 +168,8 @@ assistants and patients get 403. The web app shows the **Admin** menu only to th
 
 ## Behaviour worth knowing
 
-* **Registration** needs `consent_data`. Duplicate phone in a clinic is rejected. Phone numbers are stored as 10 digits.
+* **Patient registration** needs `consent_data`. A duplicate phone in the same clinic is rejected. Phone numbers are stored as 10 digits. A number that is a
+  staff account cannot be a patient.
 * **Treatment done** (`POST /api/treatments/{id}/complete/`) deducts stock once, using the usage rules
   (`procedure` text matches the rule's procedure, case-insensitive; `units` multiplies the quantity).
   Variable items (alginate trays, gloves) go through `POST /api/treatments/{id}/use-stock/`.

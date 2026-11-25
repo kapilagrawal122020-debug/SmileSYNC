@@ -8,29 +8,58 @@ from accounts.validators import UPLOAD_VALIDATORS
 from .models import Chair, Clinic, ClinicDocument
 
 
+def listed_clinicians(staff):
+    """Who a clinic shows as its doctors: doctors and consultants, plus a clinic admin who gave a designation
+    (the owner of a one-doctor clinic is the admin and the doctor)."""
+    return [
+        u for u in staff
+        if u.is_active and (u.role in ("doctor", "consultant") or (u.role == "clinic_admin" and u.designation))
+    ]
+
+
 class ClinicSerializer(serializers.ModelSerializer):
-    """Public profile: also what patients see in their app."""
+    """The clinic's own profile, edited by its clinic admin. Also what a patient sees in their app."""
 
     doctors = serializers.SerializerMethodField()
 
     class Meta:
         model = Clinic
         fields = [
-            "id", "name", "address", "city", "phone",
-            "google_review_url", "website_url", "social_url", "doctors",
+            "id", "slug", "name", "address", "city", "state", "pincode", "location_url", "phone", "email",
+            "google_review_url", "website_url", "social_url", "about", "timings", "doctors",
         ]
-        # The name belongs to the platform directory. The point of contact and admin notes are not exposed here at all.
-        read_only_fields = ["name"]
+        # The name and web address belong to the platform directory. The point of contact and admin notes are not exposed here at all.
+        read_only_fields = ["name", "slug", "state", "pincode"]
 
     @extend_schema_field(serializers.ListField(child=serializers.DictField()))
     def get_doctors(self, clinic):
-        staff = clinic.staff.filter(role__in=["doctor", "consultant"], is_active=True)
         return [
             {
-                "name": u.name, "role": u.role, "designation": u.designation,
+                "name": u.name, "role": "doctor" if u.role == "clinic_admin" else u.role, "designation": u.designation,
                 "speciality": u.speciality, "registration_number": u.registration_number,
             }
-            for u in staff
+            for u in listed_clinicians(clinic.staff.all())
+        ]
+
+
+class PublicClinicSerializer(serializers.ModelSerializer):
+    """The marketplace profile of a clinic. Open to everyone, so it only holds what a clinic publishes about itself:
+    never the point of contact, internal notes or doctors' registration numbers."""
+
+    doctors = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Clinic
+        fields = [
+            "id", "slug", "name", "city", "state", "pincode", "address", "location_url", "phone", "email",
+            "website_url", "social_url", "google_review_url", "about", "timings", "doctors",
+        ]
+
+    @extend_schema_field(serializers.ListField(child=serializers.DictField()))
+    def get_doctors(self, clinic):
+        return [
+            {"name": u.name, "designation": u.designation, "speciality": u.speciality}
+            for u in listed_clinicians(clinic.staff.all())
         ]
 
 

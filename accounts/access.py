@@ -14,10 +14,12 @@ from rest_framework.reverse import reverse
 
 from .validators import normalize_phone, phone_validator
 
-# Role groups. "doctor" is the clinic owner.
-OWNER = {"doctor"}
-CLINICAL = {"doctor", "consultant"}
-STAFF = {"doctor", "consultant", "assistant"}
+# Role groups. The clinic admin runs the clinic and can do everything a doctor can, so a solo doctor is simply
+# the admin of their own clinic. Doctors and consultants treat patients. Assistants do front-desk and chair work.
+OWNER = {"clinic_admin"}                                   # manage the team, profile, billing corrections, stock, documents
+CLINICAL = {"clinic_admin", "doctor", "consultant"}        # see and write treatment records
+REVIEWERS = {"clinic_admin", "doctor"}                     # hygiene photo review, private patient notes
+STAFF = CLINICAL | {"assistant"}
 ALL = STAFF | {"patient"}
 
 
@@ -56,6 +58,11 @@ def clinic_of(obj):
     return None
 
 
+def session_clinic_id(user):
+    """The clinic this login session was opened for (set by the token). None for tests and the platform admin."""
+    return getattr(user, "session_clinic_id", None)
+
+
 class ClinicScopedMixin:
     """Put this FIRST in the viewset's bases.
 
@@ -79,6 +86,8 @@ class ClinicScopedMixin:
         user = self.request.user
         if user.role == "patient":
             qs = qs.filter(**{self.patient_lookup: user}) if self.patient_lookup else qs.none()
+            if session_clinic_id(user):  # a patient sees the clinic they signed in for, not every clinic they ever visited
+                qs = qs.filter(**{self.clinic_lookup: session_clinic_id(user)})
         else:
             qs = qs.filter(**{self.clinic_lookup: user.clinic_id})
         for param, lookup in self.filter_params.items():

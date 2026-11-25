@@ -7,7 +7,7 @@ from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from accounts.access import OWNER, ClinicScopedMixin, file_response
+from accounts.access import OWNER, REVIEWERS, ClinicScopedMixin, file_response
 from clinic.models import Chair
 
 from .models import AFTER_PATIENT, AFTER_PATIENT_AREAS, HygieneCheck
@@ -35,9 +35,9 @@ class HygieneCheckViewSet(
     queryset = HygieneCheck.objects.all()
     serializer_class = HygieneCheckSerializer
     sets_clinic = True
-    read_roles = {"doctor", "assistant"}
-    write_roles = {"doctor", "assistant"}
-    action_roles = {"review": OWNER, "score": OWNER}
+    read_roles = {"clinic_admin", "doctor", "assistant"}
+    write_roles = {"clinic_admin", "doctor", "assistant"}
+    action_roles = {"review": REVIEWERS, "score": REVIEWERS}
     filter_params = {"kind": "kind", "status": "status", "visit": "visit"}
 
     def perform_create(self, serializer):
